@@ -1,0 +1,1700 @@
+---
+title: "Baseline Model Tests"
+author: "Terry Gitersos"
+date: "02/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(FSelector)
+library(data.table)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(DMwR)
+library(rpart.plot)
+library(randomForest)
+library(adabag)
+library(caretEnsemble)
+```
+
+Note: because the Recursive Feature Elimination feature selection algorithm takes so long to run, code for the execution of feature selection was not captured here - all that is visible are the results of this process.
+
+
+0. Binarized data, partition by year, select 12 features, resample during CV
+
+```{r}
+#Load data
+
+fire_data_00 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_00$human_risk <- as.factor(fire_data_00$human_risk)
+
+fire_data_00$TFS_Alarm_Time <- as.POSIXct(fire_data_00$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_00$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_00$human_risk <- relevel(fire_data_00$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_00 <- fire_data_00[fire_data_00$year.2016 == 0 & fire_data_00$year.2017 == 0,]
+
+#Test
+test_00 <- fire_data_00[fire_data_00$year.2016 == 1 | fire_data_00$year.2017 == 1,]
+
+nrow(training_00) / nrow(fire_data_00)
+nrow(test_00) / nrow(fire_data_00)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_00$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_00[c(87:93)] <- NULL
+
+train_features_00 <- training_00[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "day_of_week.Monday.Thursday", "Material_First_Ignited.Undetermined", "day.21.31", "Building_Status.OTHER", "time_of_day.night", "Exposures.Yes", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "Sprinkler_System_Presence.3...No.sprinkler.system", "TFS_Alarm_Time", "human_risk")]
+
+train_resampled_00 <- train_features_00[order(train_features_00$TFS_Alarm_Time),]
+
+train_algo_00 <- train_resampled_00[-13]
+
+time_slices_00 <- createTimeSlices(1:nrow(train_algo_00),initialWindow = 4003, horizon = 1001, skip = 454, fixedWindow = TRUE)
+
+str(time_slices_00)
+
+myTrainControl_00 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index= time_slices_00$train, indexOut=time_slices_00$test)
+
+cv_00 <- train(human_risk~., data = train_algo_00,
+               method = "rpart",
+               trControl = myTrainControl_00)
+
+par(mfrow = c(1,2))
+boxplot(cv_00$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_00$resample$F))
+barplot(c(median(cv_00$resample$F), matrix_00$byClass[["F1"]]), ylim = range(0, cv_00$resample$F))
+```
+
+1.Binarized data, select 12 features, resample during CV, center/scale/reduce dimensionality of data
+
+```{r}
+#Load data
+
+fire_data_ml <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_01$human_risk <- as.factor(fire_data_01$human_risk)
+
+fire_data_01$TFS_Alarm_Time <- as.POSIXct(fire_data_01$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_01$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_01$human_risk <- relevel(fire_data_01$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_01 <- fire_data_01[fire_data_01$year.2016 == 0 & fire_data_01$year.2017 == 0,]
+
+#Test
+test_01 <- fire_data_01[fire_data_01$year.2016 == 1 | fire_data_01$year.2017 == 1,]
+
+nrow(training_01) / nrow(fire_data_01)
+nrow(test_01) / nrow(fire_data_01)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_01$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_01[c(87:93)] <- NULL
+
+train_features_01 <- training_01[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "day_of_week.Monday.Thursday", "Material_First_Ignited.Undetermined", "day.21.31", "Building_Status.OTHER", "time_of_day.night", "Exposures.Yes", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "Sprinkler_System_Presence.3...No.sprinkler.system", "TFS_Alarm_Time", "human_risk")]
+
+train_resampled_01 <- train_features_01[order(train_features_01$TFS_Alarm_Time),]
+
+train_algo_01 <- train_resampled_01[-13]
+
+time_slices_01 <- createTimeSlices(1:nrow(train_algo_01),initialWindow = 3999, horizon = 999, skip = 729, fixedWindow = TRUE)
+
+myTrainControl_01 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = TRUE,
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index= time_slices_01$train, indexOut=time_slices_01$test)
+
+cv_01 <- train(human_risk~., data = train_algo_01,
+               method = "rpart",
+               trControl = myTrainControl_01,
+               preProc = c("center", "scale", "pca"))
+
+predict_01 <- predict(cv_01, test_01)
+
+matrix_01 <- confusionMatrix(predict_01, as.factor(test$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_01$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_01$resample$F))
+barplot(c(median(cv_01$resample$F), matrix_01$byClass[["F1"]]), ylim = range(0, cv_01$resample$F))
+```
+
+2. Binarized data, select features (12), resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_02 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_02$human_risk <- as.factor(fire_data_02$human_risk)
+
+fire_data_02$TFS_Alarm_Time <- as.POSIXct(fire_data_02$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_02$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_02$human_risk <- relevel(fire_data_02$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_02 <- fire_data_01[fire_data_02$year.2016 == 0 & fire_data_02$year.2017 == 0,]
+
+#Test
+test_02 <- fire_data_02[fire_data_02$year.2016 == 1 | fire_data_02$year.2017 == 1,]
+
+nrow(training_02) / nrow(fire_data_02)
+nrow(test_02) / nrow(fire_data_02)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_02$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_02[c(87:93)] <- NULL
+
+train_features_02 <- training_02[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "day_of_week.Monday.Thursday", "Material_First_Ignited.Undetermined", "day.21.31", "Building_Status.OTHER", "time_of_day.night", "Exposures.Yes", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "Sprinkler_System_Presence.3...No.sprinkler.system", "TFS_Alarm_Time", "human_risk")]
+
+train_resampled_02 <- train_features_02[order(train_features_02$TFS_Alarm_Time),]
+
+train_algo_02 <- train_resampled_02[-13]
+
+time_slices_02 <- createTimeSlices(1:nrow(train_algo_02),initialWindow = 6999, horizon = 1749, skip = 38, fixedWindow = TRUE)
+
+str(time_slices_02)
+
+myTrainControl_02 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_02$train, indexOut = time_slices_02$test)
+
+cv_02 <- train(human_risk~., data = train_algo_02,
+               method = "rpart",
+               trControl = myTrainControl_02)
+
+cv_02$pred
+
+predict_02 <- predict(ensemble_model_002, test_02)
+
+matrix_002 <- confusionMatrix(cv_02$pred$pred, cv_02$pred$obs)
+
+matrix_02 <- confusionMatrix(predict_02, as.factor(test$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_02$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_02$resample$F))
+barplot(c(median(cv_02$resample$F), matrix_02$byClass[["F1"]]), ylim = range(0, cv_02$resample$F))
+```
+
+3. Binarized data, resample, select 14 features, bigger folds
+
+```{r}
+#Load data
+
+fire_data_03 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_03$human_risk <- as.factor(fire_data_03$human_risk)
+
+fire_data_03$TFS_Alarm_Time <- as.POSIXct(fire_data_03$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_03$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_03$human_risk <- relevel(fire_data_03$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_03 <- fire_data_03[fire_data_03$year.2016 == 0 & fire_data_03$year.2017 == 0,]
+
+#Test
+test_03 <- fire_data_03[fire_data_03$year.2016 == 1 | fire_data_03$year.2017 == 1,]
+
+nrow(training_03) / nrow(fire_data_03)
+nrow(test_03) / nrow(fire_data_03)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_03$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_03[c(87:93)] <- NULL
+
+#Oversample the minority class and undersample the majority class using SMOTE
+
+training_03$TFS_Alarm_Time <- as.numeric(training_03$TFS_Alarm_Time)
+
+#train_resampled <- SMOTE(human_risk ~ ., train_features, perc.over = 500, perc.under = 200)
+train_resampled_03 <- SMOTE(human_risk ~ ., training_03, perc.over = 500, perc.under = 200)
+
+#Check distribution and proportion of the class variable in the resampled data:
+
+table(train_resampled_03$human_risk)
+
+prop.table(table(train_resampled_03$human_risk))
+
+#Convert datetime attributes back to POSIXct format
+training_03$TFS_Alarm_Time <- as.POSIXct.numeric(training_03$TFS_Alarm_Time, origin = "1970-01-01")
+train_resampled_03$TFS_Alarm_Time <- as.POSIXct.numeric(train_resampled_03$TFS_Alarm_Time, origin = "1970-01-01")
+
+#Sort by TFS_Alarm_Time, ascending order
+train_resampled_03 <- train_resampled_03[order(train_resampled_03$TFS_Alarm_Time),]
+
+train_algo_03 <- train_resampled_03[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "day_of_week.Monday.Thursday", "Incident_Ward.Old.Toronto", "Incident_Ward.North.York", "response_time", "Final_Incident_Type.02...Explosion..including.during.Fire..excluding.Codes.3...11.13.", "Incident_Ward.Scarborough", "Property_Use.Residential",	"Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "Material_First_Ignited.Materials", "day.21.31", "season.Spring",	"Exposures.Yes", "human_risk")]
+
+time_slices_03 <- createTimeSlices(1:nrow(train_algo_03),initialWindow = 8001, horizon = 2001, skip = 173, fixedWindow = TRUE)
+
+str(time_slices_03)
+
+myTrainControl_03 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = TRUE,
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              summaryFunction = my_summary,
+                              index= time_slices_03$train, indexOut=time_slices_03$test)
+
+cv_03 <- train(human_risk~., data = train_algo_03,
+               method = "rpart",
+               trControl = myTrainControl_03)
+
+predict_matrix_03 <- confusionMatrix(cv_03$pred$pred, cv_03$pred$obs)
+
+predict_03 <- predict(cv_03, test_03)
+
+matrix_03 <- confusionMatrix(predict_03, as.factor(test_03$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_03$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_03$resample$F))
+barplot(c(median(cv_03$resample$F), matrix_03$byClass[["F1"]]), ylim = range(0, cv_03$resample$F))
+```
+
+4. Binarized data, resample, 17 features, bigger folds
+
+```{r}
+#Load data
+
+fire_data_04 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_04$human_risk <- as.factor(fire_data_04$human_risk)
+
+fire_data_04$TFS_Alarm_Time <- as.POSIXct(fire_data_04$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_04$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_04$human_risk <- relevel(fire_data_04$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_04 <- fire_data_04[fire_data_04$year.2016 == 0 & fire_data_04$year.2017 == 0,]
+
+#Test
+test_04 <- fire_data_04[fire_data_04$year.2016 == 1 | fire_data_04$year.2017 == 1,]
+
+nrow(training_04) / nrow(fire_data_04)
+nrow(test_04) / nrow(fire_data_04)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_04$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_04[c(87:93)] <- NULL
+
+#Oversample the minority class and undersample the majority class using SMOTE
+
+training_04$TFS_Alarm_Time <- as.numeric(training_04$TFS_Alarm_Time)
+
+#train_resampled <- SMOTE(human_risk ~ ., train_features, perc.over = 500, perc.under = 200)
+train_resampled_04 <- SMOTE(human_risk ~ ., training_04, perc.over = 500, perc.under = 200)
+
+#Check distribution and proportion of the class variable in the resampled data:
+
+table(train_resampled_04$human_risk)
+
+prop.table(table(train_resampled_04$human_risk))
+
+#Convert datetime attributes back to POSIXct format
+training_04$TFS_Alarm_Time <- as.POSIXct.numeric(training_04$TFS_Alarm_Time, origin = "1970-01-01")
+train_resampled_04$TFS_Alarm_Time <- as.POSIXct.numeric(train_resampled_04$TFS_Alarm_Time, origin = "1970-01-01")
+
+#Sort by TFS_Alarm_Time, ascending order
+train_resampled_04 <- train_resampled_04[order(train_resampled_04$TFS_Alarm_Time),]
+
+train_algo_04 <- train_resampled_04[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "day_of_week.Monday.Thursday", "Incident_Ward.Old.Toronto", "Incident_Ward.North.York", "response_time", "Final_Incident_Type.02...Explosion..including.during.Fire..excluding.Codes.3...11.13.", "Incident_Ward.Scarborough", "Property_Use.Residential",	"Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "Material_First_Ignited.Materials", "day.21.31", "season.Spring",	"Exposures.Yes", "Incident_Ward.Etobicoke", "Building_Status.OTHER", "day.11.20", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "human_risk")]
+
+time_slices_04 <- createTimeSlices(1:nrow(train_algo_04),initialWindow = 8001, horizon = 2001, skip = 173, fixedWindow = TRUE)
+
+str(time_slices_04)
+
+myTrainControl_04 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = TRUE,
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              summaryFunction = my_summary,
+                              index= time_slices_04$train, indexOut=time_slices_04$test)
+
+cv_04 <- train(human_risk~., data = train_algo_04,
+               method = "rpart",
+               trControl = myTrainControl_04)
+
+predict_04 <- predict(cv_04, test_04)
+
+matrix_04 <- confusionMatrix(predict_04, as.factor(test_04$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_04$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_04$resample$F))
+barplot(c(median(cv_04$resample$F), matrix_04$byClass[["F1"]]), ylim = range(0, cv_04$resample$F))
+```
+
+5. Binarized data, resample, 7 features, medium folds
+
+```{r}
+#Load data
+
+fire_data_05 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_05$human_risk <- as.factor(fire_data_05$human_risk)
+
+fire_data_05$TFS_Alarm_Time <- as.POSIXct(fire_data_05$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_05$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_05$human_risk <- relevel(fire_data_05$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_05 <- fire_data_05[fire_data_05$year.2016 == 0 & fire_data_05$year.2017 == 0,]
+
+#Test
+test_05 <- fire_data_05[fire_data_05$year.2016 == 1 | fire_data_05$year.2017 == 1,]
+
+nrow(training_05) / nrow(fire_data_05)
+nrow(test_05) / nrow(fire_data_05)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_05$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_05[c(87:93)] <- NULL
+
+#Oversample the minority class and undersample the majority class using SMOTE
+
+training_05$TFS_Alarm_Time <- as.numeric(training_05$TFS_Alarm_Time)
+
+#train_resampled <- SMOTE(human_risk ~ ., train_features, perc.over = 500, perc.under = 200)
+train_resampled_05 <- SMOTE(human_risk ~ ., training_05, perc.over = 500, perc.under = 200)
+
+#Check distribution and proportion of the class variable in the resampled data:
+
+table(train_resampled_05$human_risk)
+
+prop.table(table(train_resampled_05$human_risk))
+
+#Convert datetime attributes back to POSIXct format
+training_05$TFS_Alarm_Time <- as.POSIXct.numeric(training_05$TFS_Alarm_Time, origin = "1970-01-01")
+train_resampled_05$TFS_Alarm_Time <- as.POSIXct.numeric(train_resampled_05$TFS_Alarm_Time, origin = "1970-01-01")
+
+#Sort by TFS_Alarm_Time, ascending order
+train_resampled_05 <- train_resampled_05[order(train_resampled_05$TFS_Alarm_Time),]
+
+train_algo_05 <- train_resampled_05[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "day_of_week.Monday.Thursday", "Incident_Ward.Old.Toronto", "Incident_Ward.North.York", "response_time", "Final_Incident_Type.02...Explosion..including.during.Fire..excluding.Codes.3...11.13.", "human_risk")]
+
+time_slices_05 <- createTimeSlices(1:nrow(train_algo_05),initialWindow = 8001, horizon = 2001, skip = 173, fixedWindow = TRUE)
+
+str(time_slices_05)
+
+myTrainControl_05 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = TRUE,
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              summaryFunction = my_summary,
+                              index= time_slices_05$train, indexOut=time_slices_05$test)
+
+cv_05 <- train(human_risk~., data = train_algo_05,
+               method = "rpart",
+               trControl = myTrainControl_05)
+
+predict_05 <- predict(cv_05, test_05)
+
+matrix_05 <- confusionMatrix(predict_05, as.factor(test_05$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_05$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_05$resample$F))
+barplot(c(median(cv_05$resample$F), matrix_05$byClass[["F1"]]), ylim = range(0, cv_05$resample$F))
+```
+
+6. Binarized data, partition by year, resample, 7 features, 
+
+```{r}
+#Load data
+
+fire_data_06 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_06$human_risk <- as.factor(fire_data_06$human_risk)
+
+fire_data_06$TFS_Alarm_Time <- as.POSIXct(fire_data_06$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_06$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_06$human_risk <- relevel(fire_data_06$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_06 <- fire_data_06[fire_data_06$year.2016 == 0 & fire_data_06$year.2017 == 0,]
+
+#Test
+test_06 <- fire_data_06[fire_data_06$year.2016 == 1 | fire_data_06$year.2017 == 1,]
+
+nrow(training_06) / nrow(fire_data_06)
+nrow(test_06) / nrow(fire_data_06)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_06$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_06[c(87:93)] <- NULL
+
+#Oversample the minority class and undersample the majority class using SMOTE
+
+training_06$TFS_Alarm_Time <- as.numeric(training_06$TFS_Alarm_Time)
+
+#train_resampled <- SMOTE(human_risk ~ ., train_features, perc.over = 500, perc.under = 200)
+train_resampled_06 <- SMOTE(human_risk ~ ., training_06, perc.over = 500, perc.under = 200)
+
+#Check distribution and proportion of the class variable in the resampled data:
+
+table(train_resampled_06$human_risk)
+
+prop.table(table(train_resampled_06$human_risk))
+
+#Convert datetime attributes back to POSIXct format
+training_06$TFS_Alarm_Time <- as.POSIXct.numeric(training_06$TFS_Alarm_Time, origin = "1970-01-01")
+train_resampled_06$TFS_Alarm_Time <- as.POSIXct.numeric(train_resampled_06$TFS_Alarm_Time, origin = "1970-01-01")
+
+#Sort by TFS_Alarm_Time, ascending order
+train_resampled_06 <- train_resampled_06[order(train_resampled_06$TFS_Alarm_Time),]
+
+train_algo_06 <- train_resampled_06[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "day_of_week.Monday.Thursday", "Incident_Ward.Old.Toronto", "Incident_Ward.North.York", "response_time", "Final_Incident_Type.02...Explosion..including.during.Fire..excluding.Codes.3...11.13.", "human_risk")]
+
+time_slices_06 <- createTimeSlices(1:nrow(train_algo_06),initialWindow = 7001, horizon = 1750, skip = 312, fixedWindow = TRUE)
+
+str(time_slices_06)
+
+myTrainControl_06 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = TRUE,
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              summaryFunction = my_summary,
+                              index= time_slices_06$train, indexOut=time_slices_06$test)
+
+cv_06 <- train(human_risk~., data = train_algo_06,
+               method = "rpart",
+               trControl = myTrainControl_06)
+
+predict_06 <- predict(cv_06, test_06)
+
+matrix_06 <- confusionMatrix(predict_06, as.factor(test_06$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_06$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_06$resample$F))
+barplot(c(median(cv_06$resample$F), matrix_06$byClass[["F1"]]), ylim = range(0, cv_06$resample$F))
+```
+
+7. Binarized data, select features, resample during CV, bigger folds, remove outliers in response_time
+
+```{r}
+#Load data
+
+fire_data_07 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+outliers_07 <- boxplot(fire_data_07$response_time, plot = FALSE)$out
+
+data_no_outliers_07 <- fire_data_07[-which(fire_data_07$response_time %in% outliers_07),]
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+data_no_outliers_07$human_risk <- as.factor(data_no_outliers_07$human_risk)
+
+data_no_outliers_07$TFS_Alarm_Time <- as.POSIXct(data_no_outliers_07$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(data_no_outliers_07$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+data_no_outliers_07$human_risk <- relevel(data_no_outliers_07$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training_07 <- data_no_outliers_07[data_no_outliers_07$year.2016 == 0 & data_no_outliers_07$year.2017 == 0,]
+
+#Test
+test_07 <- data_no_outliers_07[data_no_outliers_07$year.2016 == 1 | data_no_outliers_07$year.2017 == 1,]
+
+nrow(training_07) / nrow(data_no_outliers_07)
+nrow(test_07) / nrow(data_no_outliers_07)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_07$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_07[c(87:93)] <- NULL
+
+train_features_07 <- training_07[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "day_of_week.Monday.Thursday", "Material_First_Ignited.Undetermined", "day.21.31", "Building_Status.OTHER", "time_of_day.night", "Exposures.Yes", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "Sprinkler_System_Presence.3...No.sprinkler.system", "TFS_Alarm_Time", "human_risk")]
+
+train_resampled_07 <- train_features_07[order(train_features_07$TFS_Alarm_Time),]
+
+train_algo_07 <- train_resampled_07[-13]
+
+time_slices_07 <- createTimeSlices(1:nrow(train_algo_07),initialWindow = 6001, horizon = 1500, skip = 143, fixedWindow = TRUE)
+
+str(time_slices_07)
+
+myTrainControl_07 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = TRUE,
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index= time_slices_07$train, indexOut=time_slices_07$test)
+
+cv_07 <- train(human_risk~., data = train_algo_07,
+               method = "rpart",
+               trControl = myTrainControl_07)
+
+predict_07 <- predict(cv_07, test_07)
+
+matrix_07 <- confusionMatrix(predict_07, as.factor(test_07$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_07$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_07$resample$F))
+barplot(c(median(cv_07$resample$F), matrix_07$byClass[["F1"]]), ylim = range(0, cv_07$resample$F))
+```
+
+8. Binarized data, bigger training set, select features (15), resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_08 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_08$human_risk <- as.factor(fire_data_08$human_risk)
+
+fire_data_08$TFS_Alarm_Time <- as.POSIXct(fire_data_08$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_08$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_08$human_risk <- relevel(fire_data_08$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_08 <- fire_data_08[order(fire_data_08$TFS_Alarm_Time),]
+
+#Training
+training_08 <- fire_data_08[1:(.8*nrow(fire_data_08)),]
+
+#Test
+test_08 <- fire_data_08[10149:12646,]
+
+nrow(training_08) / nrow(fire_data_08)
+nrow(test_08) / nrow(fire_data_08)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_08$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_08[c(87:93)] <- NULL
+
+train_algo_08 <- training_08[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "Building_Status.OTHER", "day_of_week.Monday.Thursday", "day.21.31", "Exposures.Yes", "day.11.20", "time_of_day.night", "Sprinkler_System_Presence.3...No.sprinkler.system", "Material_First_Ignited.Undetermined", "Initial_CAD_Event_Type.OTHER", "season.Winter", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "human_risk")]
+
+time_slices_08 <- createTimeSlices(1:nrow(train_algo_08),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_08)
+
+myTrainControl_08 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_08$train, indexOut = time_slices_08$test)
+
+cv_08 <- train(human_risk~., data = train_algo_08,
+               method = "rpart",
+               trControl = myTrainControl_08)
+
+par(mfrow = c(1,2))
+boxplot(cv_08$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_08$resample$F))
+barplot(c(median(cv_08$resample$F), matrix_08$byClass[["F1"]]), ylim = range(0, cv_08$resample$F))
+```
+
+9. Binarized data, bigger training set, select features (6), resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_09 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_09$human_risk <- as.factor(fire_data_09$human_risk)
+
+fire_data_09$TFS_Alarm_Time <- as.POSIXct(fire_data_09$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_09$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_09$human_risk <- relevel(fire_data_09$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_09 <- fire_data_09[order(fire_data_09$TFS_Alarm_Time),]
+
+#Training
+training_09 <- fire_data_09[1:(.8*nrow(fire_data_09)),]
+
+#Test
+test_09 <- fire_data_09[10149:12646,]
+
+nrow(training_09) / nrow(fire_data_09)
+nrow(test_09) / nrow(fire_data_09)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_09$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_09[c(87:93)] <- NULL
+
+train_algo_09 <- training_09[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "Building_Status.OTHER", "day_of_week.Monday.Thursday", "human_risk")]
+
+time_slices_09 <- createTimeSlices(1:nrow(train_algo_09),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_09)
+
+myTrainControl_09 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_09$train, indexOut = time_slices_09$test)
+
+cv_09 <- train(human_risk~., data = train_algo_09,
+               method = "rpart",
+               trControl = myTrainControl_09)
+
+predict_09 <- predict(cv_09, test_09)
+
+matrix_09 <- confusionMatrix(predict_09, as.factor(test_09$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_09$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_09$resample$F))
+barplot(c(median(cv_09$resample$F), matrix_09$byClass[["F1"]]), ylim = range(0, cv_09$resample$F))
+```
+
+10. Binarized data, bigger training set, select features (entire dataset), resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_10 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_10$human_risk <- as.factor(fire_data_10$human_risk)
+
+fire_data_10$TFS_Alarm_Time <- as.POSIXct(fire_data_10$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_10$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_10$human_risk <- relevel(fire_data_10$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_10 <- fire_data_10[order(fire_data_10$TFS_Alarm_Time),]
+
+#Training
+training_10 <- fire_data_10[1:(.8*nrow(fire_data_10)),]
+
+#Test
+test_10 <- fire_data_10[10149:12646,]
+
+nrow(training_10) / nrow(fire_data_10)
+nrow(test_10) / nrow(fire_data_10)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_10$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_10[c(87:93)] <- NULL
+
+train_algo_10 <- training_10
+
+time_slices_10 <- createTimeSlices(1:nrow(train_algo_10),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_10)
+
+myTrainControl_10 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_10$train, indexOut = time_slices_10$test)
+
+cv_10 <- train(human_risk~., data = train_algo_10,
+               method = "rpart",
+               trControl = myTrainControl_10)
+
+predict_10 <- predict(cv_10, test_10)
+
+matrix_10 <- confusionMatrix(predict_10, as.factor(test_10$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_10$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_10$resample$F))
+barplot(c(median(cv_10$resample$F), matrix_10$byClass[["F1"]]), ylim = range(0, cv_10$resample$F))
+```
+
+11. Binarized data, bigger training set, resample, select features (15), bigger folds
+
+```{r}
+#Load data
+
+fire_data_11 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_11$human_risk <- as.factor(fire_data_11$human_risk)
+
+fire_data_11$TFS_Alarm_Time <- as.POSIXct(fire_data_11$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_11$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_11$human_risk <- relevel(fire_data_11$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_11 <- fire_data_11[order(fire_data_11$TFS_Alarm_Time),]
+
+#Training
+training_11 <- fire_data_11[1:(.8*nrow(fire_data_11)),]
+
+#Test
+test_11 <- fire_data_11[10149:12646,]
+
+nrow(training_11) / nrow(fire_data_11)
+nrow(test_11) / nrow(fire_data_11)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_11$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_11[c(87:93)] <- NULL
+
+#Oversample the minority class and undersample the majority class using SMOTE
+
+training_11$TFS_Alarm_Time <- as.numeric(training_11$TFS_Alarm_Time)
+
+#train_resampled <- SMOTE(human_risk ~ ., train_features, perc.over = 500, perc.under = 200)
+train_resampled_11 <- SMOTE(human_risk ~ ., training_11, perc.over = 500, perc.under = 200)
+
+#Check distribution and proportion of the class variable in the resampled data:
+
+table(train_resampled_11$human_risk)
+
+prop.table(table(train_resampled_11$human_risk))
+
+#Convert datetime attributes back to POSIXct format
+training_11$TFS_Alarm_Time <- as.POSIXct.numeric(training_11$TFS_Alarm_Time, origin = "1970-01-01")
+train_resampled_11$TFS_Alarm_Time <- as.POSIXct.numeric(train_resampled_11$TFS_Alarm_Time, origin = "1970-01-01")
+
+train_features_11 <- train_resampled_11[order(train_resampled_11$TFS_Alarm_Time),]
+
+train_algo_11 <- train_features_11[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "day_of_week.Monday.Thursday", "Property_Use.Residential", "response_time", "Final_Incident_Type.02...Explosion..including.during.Fire..excluding.Codes.3...11.13.", "day.11.20", "Incident_Ward.Old.Toronto", "Incident_Ward.Etobicoke", "Exposures.Yes", "season.Spring", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "time_of_day.night", "human_risk")]
+
+time_slices_11 <- createTimeSlices(1:nrow(train_algo_11),initialWindow = 7001, horizon = 1751, skip = 479, fixedWindow = TRUE)
+
+str(time_slices_11)
+
+myTrainControl_11 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              summaryFunction = my_summary,
+                              index = time_slices_11$train, indexOut = time_slices_11$test)
+
+
+cv_11 <- train(human_risk~., data = train_algo_11,
+               method = "rpart",
+               trControl = myTrainControl_11)
+
+predict_11 <- predict(cv_11, test_11)
+
+matrix_11 <- confusionMatrix(predict_11, as.factor(test_11$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_11$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_11$resample$F))
+barplot(c(median(cv_11$resample$F), matrix_11$byClass[["F1"]]), ylim = range(0, cv_11$resample$F))
+```
+
+12. Binarized data, remove response_time outliers, bigger training set (90%), select features (15), resample during CV, bigger folds
+
+```{r}
+fire_data_12 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+outliers_12 <- boxplot(fire_data_12$response_time, plot = FALSE)$out
+
+data_no_outliers_12 <- fire_data_12[-which(fire_data_12$response_time %in% outliers_12),]
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+data_no_outliers_12$human_risk <- as.factor(data_no_outliers_12$human_risk)
+
+data_no_outliers_12$TFS_Alarm_Time <- as.POSIXct(data_no_outliers_12$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(data_no_outliers_12$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+data_no_outliers_12$human_risk <- relevel(data_no_outliers_12$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+data_no_outliers_12 <- data_no_outliers_12[order(data_no_outliers_12$TFS_Alarm_Time),]
+
+#Training
+training_12 <- data_no_outliers_12[1:(.9*nrow(data_no_outliers_12)),]
+
+#Test
+test_12 <- data_no_outliers_12[11030:12255,]
+
+nrow(training_12) / nrow(data_no_outliers_12)
+nrow(test_12) / nrow(data_no_outliers_12)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_12$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_12[c(87:93)] <- NULL
+
+train_algo_12 <- training_12[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "response_time", "Material_First_Ignited.Undetermined", "day_of_week.Monday.Thursday", "day.21.31", "Exposures.Yes", "Building_Status.OTHER", "day.1.10", "human_risk")]
+
+time_slices_12 <- createTimeSlices(1:nrow(train_algo_12),initialWindow = 7001, horizon = 1751, skip = 252, fixedWindow = TRUE)
+
+str(time_slices_12)
+
+myTrainControl_12 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_12$train, indexOut = time_slices_12$test)
+
+cv_12 <- train(human_risk~., data = train_algo_12,
+               method = "rpart",
+               trControl = myTrainControl_12)
+
+predict_12 <- predict(cv_12, test_12)
+
+matrix_12 <- confusionMatrix(predict_12, as.factor(test_12$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_12$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_12$resample$F))
+barplot(c(median(cv_12$resample$F), matrix_12$byClass[["F1"]]), ylim = range(0, cv_12$resample$F))
+```
+
+13. Binarized data, remove outliers, bigger training set, select features (15), resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_13 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+outliers_13 <- boxplot(fire_data_13$response_time, plot = FALSE)$out
+
+data_no_outliers_13 <- fire_data_13[-which(fire_data_13$response_time %in% outliers_13),]
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+data_no_outliers_13$human_risk <- as.factor(data_no_outliers_13$human_risk)
+
+data_no_outliers_13$TFS_Alarm_Time <- as.POSIXct(data_no_outliers_13$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(data_no_outliers_13$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+data_no_outliers_13$human_risk <- relevel(data_no_outliers_13$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+data_no_outliers_13 <- data_no_outliers_13[order(data_no_outliers_13$TFS_Alarm_Time),]
+
+#Training
+training_13 <- data_no_outliers_13[1:(.8*nrow(data_no_outliers_13)),]
+
+#Test
+test_13 <- data_no_outliers_13[9805:12255,]
+
+nrow(training_13) / nrow(data_no_outliers_13)
+nrow(test_13) / nrow(data_no_outliers_13)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_13$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_13[c(87:93)] <- NULL
+
+train_algo_13 <- training_13[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "Material_First_Ignited.Undetermined", "response_time", "Building_Status.OTHER", "day_of_week.Monday.Thursday", "day.21.31", "Exposures.Yes", "day.11.20", "Sprinkler_System_Presence.3...No.sprinkler.system", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER", "Property_Use.Vehicles", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "Incident_Ward.Old.Toronto", "human_risk")]
+
+time_slices_13 <- createTimeSlices(1:nrow(train_algo_13),initialWindow = 7001, horizon = 1750, skip = 116, fixedWindow = TRUE)
+
+str(time_slices_13)
+
+myTrainControl_13 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_13$train, indexOut = time_slices_13$test)
+
+
+cv_13 <- train(human_risk~., data = train_algo_13,
+               method = "rpart",
+               trControl = myTrainControl_13)
+
+predict_13 <- predict(cv_13, test_13)
+
+matrix_13 <- confusionMatrix(predict_13, as.factor(test_13$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_13$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_13$resample$F))
+barplot(c(median(cv_13$resample$F), matrix_13$byClass[["F1"]]), ylim = range(0, cv_13$resample$F))
+```
+
+14. Unbinarized data, 80% training set, 10 features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_14 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/pre_binary.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_14$human_risk <- as.factor(fire_data_14$human_risk)
+
+fire_data_14$TFS_Alarm_Time <- as.POSIXct(fire_data_14$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_14$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_14$human_risk <- relevel(fire_data_14$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_14 <- fire_data_14[order(fire_data_14$TFS_Alarm_Time),]
+
+#Training
+training_14 <- fire_data_14[1:(.8*nrow(fire_data_14)),]
+
+#Test
+test_14 <- fire_data_14[10149:12646,]
+
+nrow(training_14) / nrow(fire_data_14)
+nrow(test_14) / nrow(fire_data_14)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_14$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_14[c(28)] <- NULL
+
+rfe_results_14 <- rfe(training_14[,c(1:24, 27:31)], training$human_risk, sizes = c(3:15), metric = "Kappa", rfeControl = control)
+
+varImp(rfe_results_14)
+rfe_results$results_14
+rfe_results$bestSubset_14
+rfe_results$optsize_14
+
+train_algo_14 <- training_14[,c("Extent_Of_Fire", "Area_of_Origin", "Property_Use", "Smoke_Spread", "Possible_Cause", "Incident_Ward", "Material_First_Ignited", "response_time", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation", "human_risk")]
+
+time_slices_14 <- createTimeSlices(1:nrow(train_algo_14),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_14)
+
+myTrainControl_14 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_14$train, indexOut = time_slices_14$test)
+
+cv_14 <- train(human_risk~., data = train_algo_14,
+               method = "rpart",
+               trControl = myTrainControl_14)
+
+predict_14 <- predict(cv_14, test_14)
+
+matrix_14 <- confusionMatrix(predict_14, as.factor(test_14$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_14$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_14$resample$F))
+barplot(c(median(cv_14$resample$F), matrix_14$byClass[["F1"]]), ylim = range(0, cv_14$resample$F))
+```
+
+15. Unbinarized data, 80% training set, all features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_15 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/pre_binary.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_15$human_risk <- as.factor(fire_data_15$human_risk)
+
+fire_data_15$TFS_Alarm_Time <- as.POSIXct(fire_data_15$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_15$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_15$human_risk <- relevel(fire_data_15$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_15 <- fire_data_15[order(fire_data_15$TFS_Alarm_Time),]
+
+#Training
+training_15 <- fire_data_15[1:(.8*nrow(fire_data_15)),]
+
+#Test
+test_15 <- fire_data_15[10149:12646,]
+
+nrow(training_15) / nrow(fire_data_15)
+nrow(test_15) / nrow(fire_data_15)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_15$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_15[c(28)] <- NULL
+
+train_algo_15 <- training_15
+
+time_slices_15 <- createTimeSlices(1:nrow(train_algo_15),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_15)
+
+myTrainControl_15 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_15$train, indexOut = time_slices_15$test)
+
+cv_15 <- train(human_risk~., data = train_algo_15,
+               method = "rpart",
+               trControl = myTrainControl_15)
+
+predict_15 <- predict(cv_15, test_15)
+
+matrix_15 <- confusionMatrix(predict_15, as.factor(test_15$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_15$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_15$resample$F))
+barplot(c(median(cv_15$resample$F), matrix_15$byClass[["F1"]]), ylim = range(0, cv_15$resample$F))
+```
+
+16. Binarized data, 80% training set, all features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_16 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_16$human_risk <- as.factor(fire_data_16$human_risk)
+
+fire_data_16$TFS_Alarm_Time <- as.POSIXct(fire_data_16$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_16$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_16$human_risk <- relevel(fire_data_16$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_16 <- fire_data_16[order(fire_data_16$TFS_Alarm_Time),]
+
+#Training
+training_16 <- fire_data_16[1:(.8*nrow(fire_data_16)),]
+
+#Test
+test_16 <- fire_data_16[10149:12646,]
+
+nrow(training_16) / nrow(fire_data_16)
+nrow(test_16) / nrow(fire_data_16)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_16$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_16[c(94)] <- NULL
+
+train_algo_16 <- training_16
+
+time_slices_16 <- createTimeSlices(1:nrow(train_algo_16),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_16)
+
+myTrainControl_16 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_16$train, indexOut = time_slices_16$test)
+
+cv_16 <- train(human_risk~., data = train_algo_16,
+               method = "rpart",
+               trControl = myTrainControl_16)
+
+predict_16 <- predict(cv_16, test_16)
+
+matrix_16 <- confusionMatrix(predict_16, as.factor(test_16$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_15$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_15$resample$F))
+barplot(c(median(cv_15$resample$F), matrix_15$byClass[["F1"]]), ylim = range(0, cv_15$resample$F))
+```
+
+17. Unbinarized data, 80% training set, 21 features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_17 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/pre_binary.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_17$human_risk <- as.factor(fire_data_17$human_risk)
+
+fire_data_17$TFS_Alarm_Time <- as.POSIXct(fire_data_17$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_17$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_17$human_risk <- relevel(fire_data_17$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_17 <- fire_data_17[order(fire_data_17$TFS_Alarm_Time),]
+
+#Training
+training_17 <- fire_data_17[1:(.8*nrow(fire_data_17)),]
+
+#Test
+test_17 <- fire_data_17[10149:12646,]
+
+nrow(training_17) / nrow(fire_data_17)
+nrow(test_17) / nrow(fire_data_17)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_17$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_17[c(28)] <- NULL
+
+train_algo_17 <- training_17[,c("Extent_Of_Fire", "Area_of_Origin", "Property_Use", "Smoke_Spread", "Possible_Cause", "Incident_Ward", "Material_First_Ignited", "response_time", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation", "season", "Exposures", "Building_Status", "Smoke_Alarm_at_Fire_Origin_Alarm_Failure", "Ignition_Source", "Sprinkler_System_Operation", "day", "Level_Of_Origin", "Status_of_Fire_On_Arrival", "Sprinkler_System_Presence", "time_of_day", "Smoke_Alarm_at_Fire_Origin_Alarm_Type", "human_risk")]
+
+time_slices_17 <- createTimeSlices(1:nrow(train_algo_17),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_17)
+
+myTrainControl_17 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_17$train, indexOut = time_slices_17$test)
+
+cv_17 <- train(human_risk~., data = train_algo_17,
+               method = "rpart",
+               trControl = myTrainControl_17)
+
+predict_17 <- predict(cv_17, test_17)
+
+matrix_17 <- confusionMatrix(predict_17, as.factor(test_17$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_17$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_17$resample$F))
+barplot(c(median(cv_17$resample$F), matrix_17$byClass[["F1"]]), ylim = range(0, cv_17$resample$F))
+```
+
+18. Binarized data, 80% training set, 10 RFE features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_18 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_18$human_risk <- as.factor(fire_data_18$human_risk)
+
+fire_data_18$TFS_Alarm_Time <- as.POSIXct(fire_data_18$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_18$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_18$human_risk <- relevel(fire_data_18$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_18 <- fire_data_18[order(fire_data_18$TFS_Alarm_Time),]
+
+#Training
+training_18 <- fire_data_18[1:(.8*nrow(fire_data_18)),]
+
+#Test
+test_18 <- fire_data_18[10149:12646,]
+
+nrow(training_18) / nrow(fire_data_18)
+nrow(test_18) / nrow(fire_data_18)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_18$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_18[c(87:93)] <- NULL
+
+train_algo_18 <- training_18[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.1...Confined.to.object.of.origin", "Extent_Of_Fire.OTHER", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER", "Building_Status.OTHER", "Material_First_Ignited.Undetermined", "Property_Use.Residential", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "Initial_CAD_Event_Type.OTHER", "Area_of_Origin.Storage.Area", "human_risk")]
+
+time_slices_18 <- createTimeSlices(1:nrow(train_algo_18),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_18)
+
+myTrainControl_18 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_18$train, indexOut = time_slices_18$test)
+
+cv_18 <- train(human_risk~., data = train_algo_18,
+               method = "rpart",
+               trControl = myTrainControl_18)
+
+predict_18 <- predict(cv_18, test_18)
+
+matrix_18 <- confusionMatrix(predict_18, as.factor(test_18$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_18$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_18$resample$F))
+barplot(c(median(cv_18$resample$F), matrix_18$byClass[["F1"]]), ylim = range(0, cv_18$resample$F))
+```
+
+19. Binarized data, 80% training set, 5 RFE features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_19 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_19$human_risk <- as.factor(fire_data_19$human_risk)
+
+fire_data_19$TFS_Alarm_Time <- as.POSIXct(fire_data_19$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_19$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_19$human_risk <- relevel(fire_data_19$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_19 <- fire_data_19[order(fire_data_19$TFS_Alarm_Time),]
+
+#Training
+training_19 <- fire_data_19[1:(.8*nrow(fire_data_19)),]
+
+#Test
+test_19 <- fire_data_19[10149:12646,]
+
+nrow(training_16) / nrow(fire_data_16)
+nrow(test_16) / nrow(fire_data_16)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_19$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_19[c(87:93)] <- NULL
+
+train_algo_19 <- training_19[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.1...Confined.to.object.of.origin", "Extent_Of_Fire.OTHER", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER", "human_risk")]
+
+time_slices_19 <- createTimeSlices(1:nrow(train_algo_19),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_19)
+
+myTrainControl_19 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_19$train, indexOut = time_slices_19$test)
+
+cv_19 <- train(human_risk~., data = train_algo_19,
+               method = "rpart",
+               trControl = myTrainControl_19)
+
+predict_19 <- predict(cv_19, test_19)
+
+matrix_19 <- confusionMatrix(predict_19, as.factor(test_19$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_19$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_19$resample$F))
+barplot(c(median(cv_19$resample$F), matrix_19$byClass[["F1"]]), ylim = range(0, cv_19$resample$F))
+```
+
+20. Binarized data, 80% training set, 18 features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_20 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_20$human_risk <- as.factor(fire_data_20$human_risk)
+
+fire_data_20$TFS_Alarm_Time <- as.POSIXct(fire_data_20$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_20$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_20$human_risk <- relevel(fire_data_20$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_20 <- fire_data_16[order(fire_data_20$TFS_Alarm_Time),]
+
+#Training
+training_20 <- fire_data_20[1:(.8*nrow(fire_data_20)),]
+
+#Test
+test_20 <- fire_data_20[10149:12646,]
+
+nrow(training_20) / nrow(fire_data_20)
+nrow(test_20) / nrow(fire_data_20)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_20$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_20[c(87:93)] <- NULL
+
+train_algo_20 <- training_20[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "Building_Status.OTHER", "Material_First_Ignited.Undetermined", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER", "Extent_Of_Fire.1...Confined.to.object.of.origin", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "Exposures.Yes", "Initial_CAD_Event_Type.OTHER", "Sprinkler_System_Presence.3...No.sprinkler.system", "Property_Use.Vehicles", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "Level_Of_Origin.Upper.Floors", "Property_Use.Miscellaneous", "Ignition_Source.Other.Electrical.Mechanical", "Area_of_Origin.Storage.Area", "Possible_Cause.Misuse.of.Material.First.Ignited", "human_risk")]
+
+time_slices_20 <- createTimeSlices(1:nrow(train_algo_20),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_20)
+
+myTrainControl_20 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_20$train, indexOut = time_slices_20$test)
+
+cv_20 <- train(human_risk~., data = train_algo_20,
+               method = "rpart",
+               trControl = myTrainControl_20)
+
+predict_20 <- predict(cv_20, test_20)
+
+matrix_20 <- confusionMatrix(predict_20, as.factor(test_20$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_20$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_20$resample$F))
+barplot(c(median(cv_20$resample$F), matrix_20$byClass[["F1"]]), ylim = range(0, cv_20$resample$F))
+```
+
+21. Binarized data, , 6 features, resample during CV, bigger folds
+
+```{r}
+#Load data
+
+fire_data_21 <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_21$human_risk <- as.factor(fire_data_21$human_risk)
+
+fire_data_21$TFS_Alarm_Time <- as.POSIXct(fire_data_21$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(fire_data_21$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the default positive outcome
+
+fire_data_21$human_risk <- relevel(fire_data_21$human_risk, "One")
+
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+fire_data_21 <- fire_data_16[order(fire_data_21$TFS_Alarm_Time),]
+
+#Training
+training_21 <- fire_data_21[1:(.8*nrow(fire_data_21)),]
+
+#Test
+test_21 <- fire_data_21[10149:12646,]
+
+nrow(training_21) / nrow(fire_data_21)
+nrow(test_21) / nrow(fire_data_21)
+
+#Remove extraneous or non-predictive attributes from training set:
+
+training_21$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training_21[c(87:93)] <- NULL
+
+train_algo_21 <- training_21[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "Building_Status.OTHER", "Material_First_Ignited.Undetermined", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER", "human_risk")]
+
+time_slices_21 <- createTimeSlices(1:nrow(train_algo_21),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices_21)
+
+myTrainControl_21 <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices_21$train, indexOut = time_slices_21$test)
+
+cv_21 <- train(human_risk~., data = train_algo_21,
+               method = "rpart",
+               trControl = myTrainControl_21)
+
+predict_21 <- predict(cv_21, test_21)
+
+matrix_21 <- confusionMatrix(predict_21, as.factor(test_21$human_risk))
+
+par(mfrow = c(1,2))
+boxplot(cv_21$resample$F, name = "F-Score: Training Distribution", ylim = range(0, cv_21$resample$F))
+barplot(c(median(cv_21$resample$F), matrix_21$byClass[["F1"]]), ylim = range(0, cv_21$resample$F))
+```

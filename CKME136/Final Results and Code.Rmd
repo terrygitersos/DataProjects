@@ -1,0 +1,526 @@
+---
+title: "Final Results and Code"
+author: "Terry Gitersos"
+date: "15/03/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(FSelector)
+library(data.table)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(DMwR)
+library(rpart.plot)
+library(randomForest)
+library(adabag)
+library(caretEnsemble)
+library(gghighlight)
+library(cowplot)
+```
+
+Load Data
+
+```{r}
+
+fire_data_ml <- read.csv(url("https://github.com/terrygitersos/CKME136/raw/master/Data/binarized_final.csv"), header = TRUE, sep = ",")
+
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data_ml$human_risk <- as.factor(fire_data_ml$human_risk)
+
+fire_data_ml$TFS_Alarm_Time <- as.POSIXct(fire_data_ml$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+
+#Transform class variable to allow execution of caret package
+
+levels(fire_data_ml$human_risk) <- c("Zero", "One")
+
+#Reverse levels in class variable to make "One" the positive variable
+
+fire_data_ml$human_risk <- relevel(fire_data_ml$human_risk, "One")
+```
+
+Data Partitioning
+
+```{r}
+#Sort data by date
+fire_data_ml <- fire_data_ml[order(fire_data_ml$TFS_Alarm_Time),]
+
+#First 80% of the sorted data is the training set
+training <- fire_data_ml[1:(.8*nrow(fire_data_ml)),]
+
+#The last 20% of the sorted data is the test set
+test <- fire_data_08[10149:12646,]
+
+nrow(training) / nrow(fire_data)
+nrow(test) / nrow(fire_data)
+
+#Training set: ~80% of total
+#Test set:     ~20% of total
+```
+
+```{r}
+#Remove extraneous or non-predictive attributes from training set:
+
+training$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training[c(87:93)] <- NULL
+```
+
+Feature Selection
+
+Using three methods, one from each of the three classes of feature selection: wrapper, filter, embedded
+
+```{r}
+#Feature Selection, Filter: Information Gain
+
+#Run the IG algorithm, minus TFS_Alarm_Time attribute
+set.seed(1000)
+ig_results <- information.gain(human_risk~., training[-87])
+
+#Transform row names into a column
+ig_results <- setDT(ig_results, keep.rownames = TRUE)[]
+
+#Display results
+ig_results[order(-ig_results$attr_importance),]
+
+#The 10 highest ranking attributes are:
+
+#1. Extent_Of_Fire.OTHER	
+#2. Area_of_Origin.Functional.Area	
+#3. Property_Use.Residential	
+#4. Building_Status.OTHER	
+#5. Sprinkler_System_Presence.3...No.sprinkler.system	
+#6. Initial_CAD_Event_Type.OTHER	
+#7. Property_Use.Vehicles	
+#8. Level_Of_Origin.Upper.Floors	
+#9. Property_Use.Miscellaneous
+#10. Ignition_Source.Other.Electrical.Mechanical
+```
+
+```{r}
+#Feature Selection, Wrapper: Recursive Feature Elimination
+
+#Define the control using a random forest selection function
+
+control <- rfeControl(functions = rfFuncs, method = "repeatedcv", repeats = 5, verbose = FALSE, returnResamp = "all")
+
+#run the RFE algorithm
+set.seed(1100)
+rfe_results <- rfe(training[1:86], training$human_risk, sizes = c(1:20), metric = "Kappa", rfeControl = control)
+
+#List attributes in order of importance
+varImp(rfe_results)
+
+#The 10 highest attributes are as follows:
+
+#1. Area_of_Origin.Functional.Area	
+#2. Extent_Of_Fire.1...Confined.to.object.of.origin	
+#3. Extent_Of_Fire.OTHER	
+#4. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER	
+#5. Building_Status.OTHER	
+#6. Material_First_Ignited.Undetermined	
+#7. Property_Use.Residential	
+#8. Smoke_Spread.2...Confined.to.part.of.room.area.of.origin	
+#9. Initial_CAD_Event_Type.OTHER	
+#10. Area_of_Origin.Storage.Area
+
+#The Recursive Feature Selection Algorithm has a function that indicates how many features should be optimally included in a model, according to a a designated measurement (in this case Cohen's Kappa). 
+
+rfe_results$optsize
+
+rfe_viz <- as.data.frame(rfe_results$results)
+
+rfe_viz
+
+#Based on the results, the optimal number of features is 20, though the algorithm only tested subsets ranging between 1 and 20 features, as well as the full 86-feature data set. Generally, an increase in Cohen's Kappa and the number of features appear positively correlated, so the model improves as more and more variables are selected. This suggest that this data cannot be easily generalized, and that it may prove difficult building a good model with it. 
+
+#Line plot with maximum number of features removed
+ggplot(data=rfe_viz[1:20,], aes(x=Variables, y=Kappa, group=1)) +
+  geom_line(color="red")+
+  geom_point() + 
+  labs(title="Cohen's Kappa by Feature Size",x="# of Features", y = "Kappa")
+
+#Line plot with maximum number of features included
+ggplot(data=rfe_viz, aes(x=as.factor(Variables), y=Kappa)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme_minimal() +
+  labs(title="Cohen's Kappa by Feature Size - Includes Full Data Set",x="# of Features", y = "Kappa")
+```
+
+```{r}
+#Feature Selection, Embedded: LASSO
+
+#Matrix of predictors
+x = model.matrix(human_risk~.,training[-87])
+
+#Vector y values
+y = training$human_risk
+
+#Execute algorithm
+set.seed(1200)
+lasso_model <- cv.glmnet(x, y, alpha=1, family = "binomial")
+
+best_lambda_lasso <- lasso_model$lambda.1se
+
+#retrieve coefficients
+lasso_coef <- lasso_model$glmnet.fit$beta[,lasso_model$glmnet.fit$lambda == best_lambda_lasso]
+
+#build table
+coef_l = data.table(lasso = lasso_coef)
+
+#add feature names
+coef_l[, feature := names(lasso_coef)] 
+
+#label table
+to_plot_r = melt(coef_l, id.vars='feature', variable.name = 'model', value.name = 'coefficient')
+
+#display results
+options(scipen=999)
+to_plot_r[order(-abs(to_plot_r$coefficient)),]
+
+
+#The 10 strongest attributes are as follows:
+
+#1. Area_of_Origin.Functional.Area	
+#2. Extent_Of_Fire.OTHER
+#3. Exposures.Yes	
+#4. Property_Use.Residential	
+#5. Material_First_Ignited.Undetermined	
+#6. Smoke_Spread.2...Confined.to.part.of.room.area.of.origin	
+#7. Smoke_Spread.7...Spread.to.other.floors..confined.to.building	
+#8. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER
+#9. Smoke_Spread.OTHER
+#10. Possible_Cause.Misuse.of.Material.First.Ignited
+
+```
+
+```{r}
+#There is quite a bit of overlap between the three feature selection methods. 4 features appeared in the top 10 of all three methods, while a further 4 appeared in the top 10 of at least two methods. 
+
+#I had intended on selecting features through a points system, where only the top 10 attributes from the three methods will be assigned points. The top ranking feature receives 10 points, the second top ranking feature receives 9 points, etc. until the 10th top ranking feature receives 1 point. Features not ranked in the top 10 receive 0 points. The results of this tally:
+
+#Selected attributes
+
+#1. Area_of_Origin.Functional.Area (29 points)
+#2. Extent_Of_Fire.OTHER (27)
+#3. Property_Use.Residential (19)
+#4. Building_Status.OTHER (15)
+#5. Material_First_Ignited.Undetermined (11)
+#6. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER (10)
+#7. Extent_Of_Fire.1...Confined.to.object.of.origin (9)
+#8. Smoke_Spread.2...Confined.to.part.of.room.area.of.origin (8)
+#9. Exposures.Yes (8)
+#10. Initial_CAD_Event_Type.OTHER (7)
+#11. Sprinkler_System_Presence.3...No.sprinkler.system (6)
+#12. Property_Use.Vehicles (4)
+#13. Smoke_Spread.7...Spread.to.other.floors..confined.to.building (4)
+#14. Level_Of_Origin.Upper.Floors (3)
+#15. Property_Use.Miscellaneous (2)
+#16. Ignition_Source.Other.Electrical.Mechanical (1)
+#17. Area_of_Origin.Storage.Area (1)
+#18. Possible_Cause.Misuse.of.Material.First.Ignited (1)
+
+#These points are moot given that the optimal number of features is so high. Though the RFE feature selector suggested 20 features, subsets of 18 and 20 features performed comparably. As only 18 features appeared in the top 10 features returned by my three feature selectors, I will use all 18 of these features.
+
+#Create data frame with the selected attributes and the class variable.
+
+train_algo <- training[,c("Area_of_Origin.Functional.Area", "Extent_Of_Fire.OTHER", "Property_Use.Residential", "Building_Status.OTHER", "Material_First_Ignited.Undetermined", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.OTHER", "Extent_Of_Fire.1...Confined.to.object.of.origin", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "Exposures.Yes", "Initial_CAD_Event_Type.OTHER", "Sprinkler_System_Presence.3...No.sprinkler.system", "Property_Use.Vehicles", "Smoke_Spread.7...Spread.to.other.floors..confined.to.building", "Level_Of_Origin.Upper.Floors", "Property_Use.Miscellaneous", "Ignition_Source.Other.Electrical.Mechanical", "Area_of_Origin.Storage.Area", "Possible_Cause.Misuse.of.Material.First.Ignited", "human_risk")]
+
+```
+
+Models
+
+Informed both by Lessman's paper on benchmarking (2015) and the academic literature on fire risk prevention, I have selected four algorithms. Though Lessman recommends using one individual classifier, one homogeneous ensemble, and one heterogeneous ensemble, I have chosen one individual classifier and two homogeneous ensembles so that there are three models with which to create the hetergeneous ensemble.
+
+```{r}
+#Create function to collect full range of evaluation metrics
+
+my_summary <- function(data, lev = NULL, model = NULL){
+  a1 <- defaultSummary(data, lev, model)
+  b1 <- twoClassSummary(data, lev, model)
+  c1 <- prSummary(data, lev, model)
+  out <- c(a1, b1, c1)
+  out}
+
+#set time slices for cross-validation. It will be 10-fold time-wise cross-validation. The initial fold will have 7002 records in the training set, and 1751 records in the validation set - a ratio of approximately 80/20. Each subsequent fold starts 155 records after the starting point of the previous one.
+
+time_slices <- createTimeSlices(1:nrow(train_algo),initialWindow = 7002, horizon = 1751, skip = 154, fixedWindow = TRUE)
+
+str(time_slices)
+
+#Set Training Control - of particular note, up and down sampling of the class variable will occur with the cross validation folds.
+
+myTrainControl <- trainControl(method = "cv", 
+                              number = 10, 
+                              savePrediction = "final",
+                              classProbs = TRUE,
+                              returnResamp = "final",
+                              returnData = TRUE,
+                              sampling = "smote",
+                              summaryFunction = my_summary,
+                              index = time_slices$train, indexOut = time_slices$test)
+
+#Train Decision Tree, Logistic Regression, Random Forest and AdaBoost models
+
+set.seed(1302)
+
+model_list <- caretList(
+  human_risk~., data=train_algo,
+  metric = "Kappa",
+  trControl=myTrainControl,
+  tuneList = list(
+    tree = caretModelSpec(method = "rpart"),
+    lr = caretModelSpec(method = "glm", family = "binomial"),
+    rf = caretModelSpec(method = "rf", tuneLength = 7, stepFactor = 1.5, improve = 1e-5),
+    ada = caretModelSpec(method = "adaboost", tuneLength = 7)
+  ))
+
+results <- resamples(model_list)
+```
+
+Model Comparison - Friedman Test
+
+```{r}
+#Conduct Friedman Tests on Folds
+
+Kappa_Values <- c(results$values$`tree~Kappa`, results$values$`lr~Kappa`, results$values$`rf~Kappa`, results$values$`ada~Kappa`)
+
+F_Values <- c(results$values$`tree~F`, results$values$`lr~F`, results$values$`rf~F`, results$values$`ada~F`)
+
+Model <- rep(c("Decision Tree", "Logistic Regression", "Random Forest", "AdaBoost"), each=10, rep = 4)
+Fold <- as.factor(rep(c(1:10), 4))
+
+Kappa.Test <- data.frame(Kappa_Values, Model, Fold)
+F.Test <- data.frame(F_Values, Model, Fold)
+
+friedman.test(Kappa_Values, Fold, Model, data = Kappa.Test)
+
+#P-value is < 0.05: can reject the null hypothesis that all algorithms have the same kappa.
+
+friedman.test(F_Values, Fold, Model, data = F.Test)
+
+#P-value is < 0.05: can reject the null hypothesis that all algorithms have the same F-scores.
+
+#Perform Friedman Tests on models with baseline model removed
+
+friedman.test(Kappa_Values[11:40], Fold[11:40], Model[11:40], data = Kappa.Test[Kappa.Test$Algorithm != "Decision Tree",])
+
+#P-value is < 0.05: can reject the null hypothesis that all 3 models have the same kappa.
+
+friedman.test(F_Values[11:40], Fold[11:40], Model[11:40], data = F.Test[F.Test$Algorithm != "Decision Tree",])
+
+#P-value is < 0.05: can reject the null hypothesis that all 3 models have the same F-score.
+```
+
+Evaluating Resamples
+
+```{r}
+
+#Kappa
+
+c("Tree" = summary(results$values$`tree~Kappa`), "LR" = summary(results$values$`lr~Kappa`), "RF" = summary(results$values$`rf~Kappa`), "Adaboost" = summary(results$values$`ada~Kappa`))
+
+ggplot(Kappa.Test, aes(x=Model, y=Kappa_Values, fill = Model)) +
+  geom_boxplot() + 
+  labs(title="Training Results: Kappa",x="Model", y = "Kappa")
+
+#The kappa values are quite low overall, indicating that the models are struggling to accurately make predictions. Of the four models tested, the Random Forest model appears to be the strongest by this metric. It has the highest median kappa, and achieved the lowest minimum and highest maximum kappa. Its spread is comparable to the other models.
+
+#By this metric, the other three models are quite similar in their overall predictive power. While Adaboost has the lowest median kappa, it is a more consistent model than Decision Tree or Logistic Regression: its minimum kappa score is lowest, and has a slightly lower overall range. Decision Tree, though it has the largest spread of any of the models, has the highest median kappa other than Random Forest and comes closest to matching Random Forest in terms of maximum kappa.
+
+#F Score
+
+c("Tree" = summary(results$values$`tree~F`), "LR" = summary(results$values$`lr~F`), "RF" = summary(results$values$`rf~F`), "Adaboost" = summary(results$values$`ada~F`))
+
+ggplot(F.Test, aes(x=Model, y=F_Values, fill = Model)) +
+  geom_boxplot() + 
+  labs(title="Training Results: Harmonic Mean",x="Model", y = "F-Value")
+
+#The F-values tell a similar story as kappa: the values are quite low overall, suggesting again that the models are struggling to accurately make predictions. Once again, Random Forest appears to be the strongest model: it has the lowest minimum and the highest maximum values, the highest median value. It is also the most consistent model, with the lowest spread between minimum F-value and maximum F-value of any model.
+
+#By this metric, Adaboost is the weakest model across the board. Decision Tree and Logistic Regression appear once again to be very similar, with comparable maximum, minimum, and median F-scores.
+
+#Precision and Recall
+
+score <- c(median(results$values$`tree~Precision`), median(results$values$`lr~Precision`), median(results$values$`rf~Precision`),median(results$values$`ada~Precision`), median(results$values$`tree~Recall`), median(results$values$`lr~Recall`), median(results$values$`rf~Recall`), median(results$values$`ada~Recall`))
+
+Model_2 <- rep(c("Decision Tree", "Logistic Regression", "Random Forest", "AdaBoost"), times = 2)
+
+metric <- rep(c("Precision", "Recall"), each = 4)
+  
+prec_recall <- data.frame("Model" = Model_2, "Value" = score, "Metric" = metric)
+
+ggplot(data=prec_recall, aes(x=Model, y=Value, fill=Metric)) +
+geom_bar(stat="identity", color="black", position=position_dodge())+
+  theme_minimal() + 
+  labs(title="Training Results: Precision vs. Recall", y = "Median Value")
+
+#The reason for the weak training results appears to be type I errors (false positives, or false alarms). While the models are reasonably adept at identifying deaths or near deaths for what they are (as evidenced by the recall values), they are over-predicting the minority class which results in type I errors and very weak precision values. All models are acting more or less the same in this respect, with some small variance. Random Forest, for example, has slightly lower median recall than Decision Tree or Logistic Regression, but incrementally higher median precision.
+
+#Examine correlation of models
+modelCor(results)
+
+#With the exception of Adaboost, the models are strongly correlated to one another. This suggests that Decision Tree, Logistic Regression and Random Forest have similar strengths and weaknesses, and are predicting much of the same data well and much of the same data poorly. 
+```
+
+Ensemble the Models
+
+```{r}
+#Using Random Forest as a meta-model, as it achieved the best results in training.
+
+set.seed(1402)
+
+ensemble_model <- caretStack(model_list,
+                         method = "rf",
+                         metric = "Kappa",
+                         trControl = trainControl(
+                         method = "boot",
+                         number = 10,
+                         savePredictions = TRUE,
+                         classProbs = TRUE,
+                         sampling = "smote",
+                         summaryFunction = my_summary))
+
+score3 <- c(median(results$values$`tree~Kappa`), median(results$values$`lr~Kappa`), median(results$values$`rf~Kappa`),median(results$values$`ada~Kappa`), median(ensemble_model$ens_model$resample$Kappa)) 
+            
+score4 <- c(median(results$values$`tree~F`), median(results$values$`lr~F`), median(results$values$`rf~F`), median(results$values$`ada~F`), median(ensemble_model$ens_model$resample$F))
+
+Model_3 <- as.factor(rep(c("Decision Tree", "Logistic Regression", "Random Forest", "AdaBoost", "Ensemble")))
+  
+ensemble_kappa <- data.frame("Model" = Model_3, "Value" = score3)
+
+ensemble_F <- data.frame("Model" = Model_3, "Value" = score4)
+  
+
+ensemble_kappa_plot <- ggplot(ensemble_kappa, aes(x=Model, y=Value)) + 
+  geom_bar(stat="identity", width=.5, fill="tomato3") + 
+  labs(title="Training Results: Ensemble Model", subtitle="Median Kappa", x = "Model", y = "Kappa") +
+  gghighlight(Model == "Ensemble") +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6))
+
+ensemble_F_plot <- ggplot(ensemble_F, aes(x=Model, y=Value)) + 
+  geom_bar(stat="identity", width=.5, fill="tomato3") + 
+  labs(title="Training Results: Ensemble Model", subtitle="Median F-Value", x = "Model", y = "F-Value") +
+  gghighlight(Model == "Ensemble") +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6))
+
+plot_grid(ensemble_kappa_plot, ensemble_F_plot)
+
+#The median kappa and F-value of the ensemble model is lower than any of the four models that were in its ensemble. This is unexpected. The expectation was that the ensemble model would have all the combined strengths of its constituent models, but instead appears to have picked up its weaknesses instead. 
+```
+
+Testing the Models
+
+```{r}
+#Decision Tree
+set.seed(1502)
+Tree_Test <- predict(model_list$tree, test)
+
+Tree_Matrix <- confusionMatrix(Tree_Test, as.factor(test$human_risk))
+
+Tree_Kappa <- Tree_Matrix[["overall"]][["Kappa"]]
+Tree_FScore <- Tree_Matrix[["byClass"]][["F1"]]
+
+#Logistic Regression
+set.seed(1602)
+LR_Test <- predict(model_list$lr, test)
+
+LR_Matrix <- confusionMatrix(LR_Test, as.factor(test$human_risk))
+
+LR_Kappa <- LR_Matrix[["overall"]][["Kappa"]]
+LR_FScore <- LR_Matrix[["byClass"]][["F1"]]
+
+#Random Forest
+set.seed(1702)
+RF_Test <- predict(model_list$rf, test)
+
+RF_Matrix <- confusionMatrix(RF_Test, as.factor(test$human_risk))
+
+RF_Kappa <- RF_Matrix[["overall"]][["Kappa"]]
+RF_FScore <- RF_Matrix[["byClass"]][["F1"]]
+
+#AdaBoost
+set.seed(1802)
+Ada_Test <- predict(model_list$ada, test)
+
+Ada_Matrix <- confusionMatrix(Ada_Test, as.factor(test$human_risk))
+
+Ada_Kappa <- Ada_Matrix[["overall"]][["Kappa"]]
+Ada_FScore <- Ada_Matrix[["byClass"]][["F1"]]
+
+#Ensemble Model
+set.seed(1902)
+Ensemble_Test <- predict(ensemble_model, test)
+
+Ensemble_Matrix <- confusionMatrix(Ensemble_Test, as.factor(test$human_risk))
+
+Ensemble_Kappa <- Ensemble_Matrix[["overall"]][["Kappa"]]
+Ensemble_FScore <- Ensemble_Matrix[["byClass"]][["F1"]]
+
+#Kappa
+
+Kappa.Test.Scores <- c(median(results$values$`tree~Kappa`), Tree_Kappa, median(results$values$`lr~Kappa`), LR_Kappa, median(results$values$`rf~Kappa`), RF_Kappa, median(results$values$`ada~Kappa`), Ada_Kappa, median(ensemble_model$ens_model$resample$Kappa), Ensemble_Kappa)
+
+Model_5 <- rep(c("Decision Tree", "Logistic Regression", "Random Forest", "Adaboost", "Ensemble"), each = 2)
+
+stage_5 <- rep(c("Training", "Testing"), times = 5)
+
+kappa_eval <- data.frame("Model" = Model_5, "Value" = Kappa.Test.Scores, "Stage" = stage_5)
+
+ggplot(data=kappa_eval, aes(x=Model, y=Value, fill=Stage, group = Stage)) +
+geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() + 
+  labs(title="Testing/Training Comparison: Kappa", subtitle = "Training Figures Reflect the Median", y = "Kappa") +
+  scale_fill_brewer(palette="Paired") +
+  coord_flip() +
+  geom_text(aes(x = Model, y = Value, label=round(Value, digits = 3), group = Stage), 
+                hjust = 0, size = 3,
+                position = position_dodge(width = 1),
+                inherit.aes = TRUE)
+
+#The models were characterized by test kappa values that were over 13% lower than the median training kappa value with the notable exception of Adaboost, whose test Kappa is only 7.5% lower than its median training kappa. Adaboost performed best by this metric, though the difference in kappa between Adaboost, Random Forest, Logistic Regression, Decision Tree are quite slight. The Ensemble model fared by far the worst of the five models, with a kappa of only 0.163, approximately 22% worse than its median training kappa.
+
+#Harmonic Mean
+
+F.Test.Scores <- c(median(results$values$`tree~F`), Tree_FScore, median(results$values$`lr~F`), LR_FScore, median(results$values$`rf~F`), RF_FScore, median(results$values$`ada~F`), Ada_FScore, median(ensemble_model$ens_model$resample$F), Ensemble_FScore)
+
+F_eval <- data.frame("Model" = Model_5, "Value" = F.Test.Scores, "Stage" = stage_5)
+
+ggplot(data=F_eval, aes(x=Model, y=Value, fill=Stage, group = Stage)) +
+geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title="Testing/Training Comparison: Harmonic Mean", subtitle = "Training Figures Reflect the Median", y = "F-Value") +
+  scale_fill_manual(values=c('#999999','#E69F00')) +
+  coord_flip() +
+  geom_text(aes(x = Model, y = Value, label=round(Value, digits = 3), group = Stage), 
+                hjust = -0.25, size = 3,
+                position = position_dodge(width = 1),
+                inherit.aes = TRUE)
+
+#As with kappa, all models returned a worse F-value in testing than their median training f-value (between 9% and 12% worse). By this metric Logistic Regression performed best, though the difference between it and Random Forest is 0.02. The Ensemble Model once again fared the worst of the five models.
+
+#Precision and Recall
+
+prec_recall_test <- c(Tree_Matrix[["byClass"]][["Precision"]], Tree_Matrix[["byClass"]][["Recall"]], LR_Matrix[["byClass"]][["Precision"]], LR_Matrix[["byClass"]][["Recall"]], RF_Matrix[["byClass"]][["Precision"]], RF_Matrix[["byClass"]][["Recall"]], Ada_Matrix[["byClass"]][["Precision"]], Ada_Matrix[["byClass"]][["Recall"]], Ensemble_Matrix[["byClass"]][["Precision"]], Ensemble_Matrix[["byClass"]][["Recall"]])
+
+Model_10 <- rep(c("Decision Tree", "Logistic Regression", "Random Forest", "AdaBoost", "Ensemble"), each = 2)
+
+metric_10 <- rep(c("Precision", "Recall"), times = 5)
+
+prec_recall_eval <- data.frame("Model" = Model_10, "Value" = prec_recall_test, "Metric" = metric_10)
+
+ggplot(data=prec_recall_eval, aes(x=Model, y=Value, fill=Metric, group = Metric)) +
+geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title="Precision/Recall Comparison", subtitle = "Testing Results", y = "Value") +
+  coord_flip()
+
+#As was observed in training the models, the weak results are due to a preponderance of type I errors; as during training, the models all over-predict the minority class. Interestingly, Adaboost comes closest to convergence in its precision and recall, but both values are quite low resulting in the low harmonic mean seen in Figure 10.
+```

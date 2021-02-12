@@ -1,0 +1,1969 @@
+---
+title: "Data Exploration"
+author: "Terry Gitersos"
+date: "10/02/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(corrplot)
+library(clustMixType)
+library(caret)
+library(DataExplorer)
+```
+
+```{r}
+#Download data set (initially downloaded from Toronto Open Data website in January, 2020).
+
+fire_data <- read.csv(url("https://raw.githubusercontent.com/terrygitersos/CKME136/master/Data/Original%20Fire%20Incidents%20Data.csv"), header = TRUE, na.strings = c("","NA"))
+```
+
+```{r}
+#Create class attribute, human_risk
+
+fire_data$human_risk <- as.factor(ifelse(fire_data$Civilian_Casualties > 0 | fire_data$Count_of_Persons_Rescued > 0 | fire_data$TFS_Firefighter_Casualties > 0, 1, 0))
+```
+
+```{r}
+str(fire_data)
+
+summary(fire_data)
+
+#What jumps out immediately are that the majority of these attributes are categorical (factors), that there are few numerical attributes, and that some attributes have quite a bit of missing data.
+```
+
+```{r}
+#X_id
+
+#Definition: unique, numeric row identifier for the City of Toronto’s Open Data database. This attribute has no relevance to the research question, and can be removed.
+
+fire_data$X_id <- NULL
+```
+
+```{r}
+#Area of Origin
+
+#Definiton: A code and description assigned to the fire incident by the Ontario Fire Marshal (OFM). It describes the area of the structure where the fire occurred.
+
+str(fire_data$Area_of_Origin)
+sum(is.na(fire_data$Area_of_Origin))
+summary(fire_data$Area_of_Origin)
+
+#This is a categorical, nominal variable. It has very high cardinality (72 attributes), so it will be useful to sort the data in descending order for visualization purposes.
+
+reorder_size <- function(x) {
+  factor(x, levels = names(sort(table(x), decreasing = TRUE)))
+}
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Area_of_Origin))) +
+        geom_bar() + 
+        xlab("Area of Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Area_of_Origin == "24 - Cooking Area or Kitchen")) / length(fire_data$Area_of_Origin), 3)
+
+#There is great variance among the different levels of this data, which the most common level ("Cooking Area or Kitchen") making up 19% of the data, and the least common levels appearing to make up just a handful of examples.
+
+#High cardinality can present significant problems for machine learning algoritms in terms of dimensionality and computing resources, so it is best to group the levels together where possible. Luckily in this case, the Ontario Fire Marshal has already grouped their codes together for this attribute and several others in this dataset. You can find a document with these groups here: https://collections.ola.org/mon/2000/10298759.pdf. Grouping together the codes as specified would reduce the cardinality for this particular attribute from 72 levels to a much more manageable 8.
+
+levels(fire_data$Area_of_Origin)[1:5] <- "Means of Egress"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[2:17] <- "Functional Area"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[3:11] <- "Storage Area"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[4:14] <- "Building Services/Support Facilities"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[5:14] <- "Structural Area"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[6:13] <- "Outside Area"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[7:14] <- "Vehicle Areas"
+
+levels(fire_data$Area_of_Origin)
+
+levels(fire_data$Area_of_Origin)[8:12] <- "Miscellaneous"
+
+summary(fire_data$Area_of_Origin)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Area_of_Origin))) +
+        geom_bar() + 
+        xlab("Area of Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Area_of_Origin == "Functional Area")) / length(fire_data$Area_of_Origin), 3)
+
+#As we can see, the barplot appears much cleaner with 8 levels only. The most common level is Functional Area, which makes up 36.5% of the observations.
+
+```
+
+```{r}
+#Building_Status
+
+#Definition: A code and description assigned to the building by the OFM. It describes the state of the building where the fire occurred.
+
+str(fire_data$Building_Status)
+
+summary(fire_data$Building_Status)
+
+levels(fire_data$Building_Status)
+
+#This a categorical attribute containing nominal data. There are 7 levels.
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Building_Status))) +
+        geom_bar() + 
+        xlab("Building Status") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Building_Status == "01 - Normal (no change)")) / nrow(fire_data), 3)
+
+round(length(which(is.na(fire_data$Building_Status))) / nrow(fire_data), 3)
+
+#63.6% fires occurred in buildings declared "normal" by the OFM. 
+
+#27.4% of the observations are missing data. Rather than risk data loss by imputing new values for the missing data, I will create an eighth level, "Missing", to flag that the data is missing.
+
+fire_data$Building_Status <- as.character(fire_data$Building_Status)
+fire_data$Building_Status[is.na(fire_data$Building_Status)] <- "Missing"
+fire_data$Building_Status <- as.factor(fire_data$Building_Status)
+str(fire_data$Building_Status)
+
+```
+
+```{r}
+#Business_Impact
+
+#Definition: A code and description assigned by the OFM to the business impact caused by the fire. 
+
+#This value is determined only after the fire has been extinguished and fully investigated, so it has no relevance to the research question and can be removed.
+
+fire_data$Business_Impact <- NULL
+```
+
+```{r}
+#Civilian_Casualties
+
+#Definition: The number of civilian deaths caused by the fire. 
+
+#This is one of the attributes from which the class attribute was derived, so has become redundant with its information contained in the class variable.
+
+fire_data$Civilian_Casualties <- NULL
+```
+
+```{r}
+#Count_of_Persons_Rescued
+
+#Definition: The number of persons rescued from the fire. 
+
+#This is one of the attributes from which the class attribute was derived, so had become redundant with its information contained in the class variable.
+
+fire_data$Count_of_Persons_Rescued <- NULL
+
+```
+
+```{r}
+#Estimated_Dollar_Loss
+
+#Definition: The estimated damage caused by the fire, measured in dollars. 
+
+#This value is determined only after the fire has been extinguished and fully investigated, so is not relevant to the research question and can be removed.
+
+fire_data$Estimated_Dollar_Loss <- NULL
+```
+
+```{r}
+#Estimated_Number_Of_Persons_Displaced
+
+#This value is determined only after the fire has been extinguished and fully investigated, so is not relevant to the research question and can be removed.
+
+fire_data$Estimated_Number_Of_Persons_Displaced <- NULL
+```
+
+```{r}
+#Exposures
+
+#Definition: Number of exposure fires associated with this fire. An exposure fire refers to secondary fires which are created by a primary fire burning out of control.
+
+str(fire_data$Exposures)
+
+table(fire_data$Exposures)
+
+summary(fire_data$Exposures)
+
+#This is a quantitative attribute with ratio data, with values ranging from 1-7 with 12408 NAs (the vast majority). Rather than missing data, these values are in fact more accurately "0": these are instances in which there were 0 zero exposure fires.
+
+fire_data$Exposures[is.na(fire_data$Exposures)] <- 0
+
+table(fire_data$Exposures)
+
+summary(fire_data$Exposures)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Exposures))) +
+        geom_bar() + 
+        xlab("Number of Exposure Fires")
+
+round(length(which(fire_data$Exposures == 0)) / length(fire_data$Exposures), 3)
+
+#The vast majority of fires - 97.8% - do not cause exposure fires. Unsurprisingly, the median for this attribute is 0, while the mean is 0.35.
+
+boxplot(fire_data$Exposures)
+
+table(boxplot(fire_data$Exposures, plot = FALSE)$out)
+
+#All fires resulting in one or more exposures are mathematical outliers. However, there is no indication that these outliers represent incorrect data.
+```
+
+```{r}
+#Ext_agent_app_or_defer_time
+
+#Definition: The date and time at which Toronto Fire Services, at the scene of the fire, determined the course of action required, either spraying water (the "extinguishing agent") at the fire or determining that no application of agent was required ("deferring").
+
+str(fire_data$Ext_agent_app_or_defer_time)
+
+#Attribute was imported as a factor, must convert to a dateime format.
+
+fire_data$Ext_agent_app_or_defer_time <- as.character(fire_data$Ext_agent_app_or_defer_time)
+fire_data$Ext_agent_app_or_defer_time <- as.POSIXct(fire_data$Ext_agent_app_or_defer_time, format = "%Y-%m-%dT%H:%M:%S")
+
+str(fire_data$Ext_agent_app_or_defer_time)
+
+summary(fire_data$Ext_agent_app_or_defer_time)
+
+#This is the first of several related date/time attributes, so I will use this opportunity to do some general analysis about the temporal properties of this data.
+
+hist(fire_data$Ext_agent_app_or_defer_time, breaks = "years", right = FALSE, main = "Fires by Year", xlab = "Year")
+
+#The fires are distributed relatively evenly across the seven years of the data set.
+
+hist(fire_data$Ext_agent_app_or_defer_time, breaks = "months", right = FALSE, main = "Fires by Month", xlab = "Month")
+
+#There is noticeable variance from month, suggesting that fires may occur more frequently during some particular times of year.
+
+hist(fire_data$Ext_agent_app_or_defer_time, breaks = "quarters", right = FALSE, main = "Fires by Quarter", xlab = "Quarters")
+
+#Plotting the data by quarters shows that there are more fires during the warmer months (April-September) than in the colder months (October-March)
+
+hist(as.numeric(format(fire_data$Ext_agent_app_or_defer_time, format = "%H")), main = "Fires by 24 hour clock", xlab = "Hour")
+
+#Plotting the data by hour shows that fires vary by time of day. Generally speaking, the least number of fires occur in the morning, while the most dense concentration occurs between 3 and 8 PM.
+```
+
+```{r}
+#Extent_Of_Fire
+
+#Definition: A code and description assigned by the OFM to describe the extent of the fire. 
+
+str(fire_data$Extent_Of_Fire)
+summary(fire_data$Extent_Of_Fire)
+
+#This is a categorical attribute with nominal data and 12 levels. The levels are:
+
+levels(fire_data$Extent_Of_Fire)
+
+round(length(which(is.na(fire_data$Extent_Of_Fire))) / length(fire_data$Extent_Of_Fire), 3)
+
+#As with some other attributes that we have encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Extent_Of_Fire <- as.character(fire_data$Extent_Of_Fire)
+fire_data$Extent_Of_Fire[is.na(fire_data$Extent_Of_Fire)] <- "Missing"
+fire_data$Extent_Of_Fire <- as.factor(fire_data$Extent_Of_Fire)
+str(fire_data$Extent_Of_Fire)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Extent_Of_Fire))) +
+        geom_bar() + 
+        xlab("Extent of Fire") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Extent_Of_Fire == "1 - Confined to object of origin" | fire_data$Extent_Of_Fire == "2 - Confined to part of room/area of origin" | fire_data$Extent_Of_Fire == "9 - Confined to roof/exterior structure")) / length(which(fire_data$Extent_Of_Fire != "Missing")), 3)
+
+#The barplot demonstrates that a majority of fires (85.4%) where the data is not missing are contained, confined either to the object of origin or to the area or structure of origin. 
+```
+
+```{r}
+#Final_Incident_Type
+
+#Definition: The final incident type assigned to the fire.
+
+str(fire_data$Final_Incident_Type)
+
+#This is a categorical variable with nominal data and 2 levels.
+
+summary(fire_data$Final_Incident_Type)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Final_Incident_Type))) +
+        geom_bar() + 
+        xlab("Final Incident Type")
+
+round(length(which(fire_data$Final_Incident_Type == "01 - Fire")) / length(fire_data$Final_Incident_Type), 3)
+
+#There are only two categories in this attribute: fire, or explosion. The data is extremely imbalanced: 99.3% of all fire incidents are fires, while 0.7% are explosions.
+```
+
+```{r}
+#Fire_Alarm_System_Impact_on_Evacuation
+
+#Definition: A code and description assigned by the OFM to describe the fire alarm system's impact on evacuation.
+
+str(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+
+summary(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+
+#This is a categorical attribute with nominal data and 7 levels. The levels are:
+
+levels(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+
+#Two of the attributes describe not applicable observations. I will combine these levels into one.
+
+levels(fire_data$Fire_Alarm_System_Impact_on_Evacuation)[5:6] <- "Not Applicable"
+
+levels(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+
+round(length(which(is.na(fire_data$Fire_Alarm_System_Impact_on_Evacuation))) / length(fire_data$Fire_Alarm_System_Impact_on_Evacuation), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Fire_Alarm_System_Impact_on_Evacuation <- as.character(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+fire_data$Fire_Alarm_System_Impact_on_Evacuation[is.na(fire_data$Fire_Alarm_System_Impact_on_Evacuation)] <- "Missing"
+fire_data$Fire_Alarm_System_Impact_on_Evacuation <- as.factor(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+str(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+
+round(length(which(fire_data$Fire_Alarm_System_Impact_on_Evacuation == "Not Applicable")) / length(fire_data$Extent_Of_Fire[which(fire_data$Extent_Of_Fire != "Missing")]), 3)
+
+#Just over half of the data which isn't missing (50.8%) is not applicable. The distribution in a barplot:
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Fire_Alarm_System_Impact_on_Evacuation))) +
+        geom_bar() + 
+        xlab("Fire Alarm System Impact on Evacuation") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#Fire_Alarm_System_Operation
+
+#Definition: A code and description assigned by the OFM to describe the fire alarm system's operation.
+
+str(fire_data$Fire_Alarm_System_Operation)
+summary(fire_data$Fire_Alarm_System_Operation)
+
+#This is a categorical variable with nonimal data and 4 levels. The levels are:
+
+levels(fire_data$Fire_Alarm_System_Operation)
+
+round(length(which(is.na(fire_data$Fire_Alarm_System_Operation))) / length(fire_data$Fire_Alarm_System_Operation), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Fire_Alarm_System_Operation <- as.character(fire_data$Fire_Alarm_System_Operation)
+fire_data$Fire_Alarm_System_Operation[is.na(fire_data$Fire_Alarm_System_Operation)] <- "Missing"
+fire_data$Fire_Alarm_System_Operation <- as.factor(fire_data$Fire_Alarm_System_Operation)
+str(fire_data$Fire_Alarm_System_Operation)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Fire_Alarm_System_Operation))) +
+        geom_bar() + 
+        xlab("Fire Alarm System Operation") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#Fire_Alarm_System_Presence
+
+#Definition: A code and description assigned by the OFM that notes the presence or absence of a fire alarm system.
+
+str(fire_data$Fire_Alarm_System_Presence)
+summary(fire_data$Fire_Alarm_System_Presence)
+
+#This is a categorical variable with nominal data and 4 levels. The levels are:
+
+levels(fire_data$Fire_Alarm_System_Presence)
+
+round(length(which(is.na(fire_data$Fire_Alarm_System_Presence))) / length(fire_data$Fire_Alarm_System_Presence), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Fire_Alarm_System_Presence <- as.character(fire_data$Fire_Alarm_System_Presence)
+fire_data$Fire_Alarm_System_Presence[is.na(fire_data$Fire_Alarm_System_Presence)] <- "Missing"
+fire_data$Fire_Alarm_System_Presence <- as.factor(fire_data$Fire_Alarm_System_Presence)
+str(fire_data$Fire_Alarm_System_Presence)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Fire_Alarm_System_Presence))) +
+        geom_bar() + 
+        xlab("Fire Alarm System Operation") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Fire_Alarm_System_Presence == "1 -  Fire alarm system present")) / length(which(fire_data$Fire_Alarm_System_Presence != "Missing")), 3)
+
+#In 55.1% of instances with recorded data, there was a fire alarm present at the structure where the fire occurred.
+```
+
+```{r}
+#Fire_Under_Control_Time
+
+#Definition: The date and time at which Toronto Fire Services recorded the fire as being under control
+
+str(fire_data$Fire_Under_Control_Time)
+
+#This attribute was imported as a factor, must it be converted to a datetime format.
+
+fire_data$Fire_Under_Control_Time <- as.character(fire_data$Fire_Under_Control_Time)
+
+fire_data$Fire_Under_Control_Time <- as.POSIXct(fire_data$Fire_Under_Control_Time, format = "%Y-%m-%dT%H:%M:%S")
+
+str(fire_data$Fire_Under_Control_Time)
+
+summary(fire_data$Fire_Under_Control_Time)
+
+#One of the observations is marked not applicable. I will deal with this once I have completed a univariate analysis of all date/time attributes.
+
+summary(fire_data[!is.na(fire_data$Fire_Under_Control_Time), c("Ext_agent_app_or_defer_time", "Fire_Under_Control_Time")])
+
+#The median and mean of the time when the water began to spray and the time where the fire was declared under control are very close to one another, so plotting this attribute by year, month and hour would yield very similar results as for the Ext_agent_app_or_defer_time attribute. 
+```
+
+```{r}
+#Ignition_Source
+
+#Definition: A code and description assigned to the fire incident by the Ontario Fire Marshal (OFM). It describes the ignition source of the fire.
+
+str(fire_data$Ignition_Source)
+
+sum(is.na(fire_data$Ignition_Source))
+
+summary(fire_data$Ignition_Source)
+
+#This is a categorical variable with nominal data and very high cardinality (83 levels).
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Ignition_Source))) +
+        geom_bar() + 
+        xlab("Ignition Source") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Ignition_Source == "999 - Undetermined")) / length(fire_data$Ignition_Source), 3)
+
+#In 27.1% of cases, the ignition source was undetermined. No other level appear to make up even 10% of the data. 
+
+#To reduce cardinality, I will grouping together the levels as specified in the OFM's Codes List (linked to above). 
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[10:17] <- "Cooking Equipment"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[11:21] <- "Electrical Distribution Equipment"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[12:22] <- "Heating Equipment/Chimney"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[13:20] <- "Appliances"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[14:20] <- "Lighting Equipment"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[15:19] <- "Processing Equipment"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[16:23] <- "Open Flame Tools/Smokers' Articles"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[17:21] <- "Other Electrical/Mechanical"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[1:9] <- "Miscellaneous"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[10:19] <- "Miscellaneous"
+
+levels(fire_data$Ignition_Source)
+
+levels(fire_data$Ignition_Source)[10] <- "Undetermined"
+
+summary(fire_data$Ignition_Source)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Ignition_Source))) +
+        geom_bar() + 
+        xlab("Ignition Source") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Ignition_Source == "Cooking Equipment")) / length(fire_data$Ignition_Source), 3)
+
+#The attribute now has 10 levels. Other than Undetermined, the most common level is Cooking Equipment, which makes up 19.5% of observations.
+```
+
+```{r}
+#Incident_Number
+
+#Definition: this is the unique identifier assigned to the fire incident by Toronto Fire Services.
+
+#This attribute has no relevance to my research question, so can be removed.
+
+fire_data$Incident_Number <- NULL
+```
+
+```{r}
+#Incident_Station_Area
+
+#Definition: This refers to the TFS Fire Station closest to where the fire occurred.
+
+str(fire_data$Incident_Station_Area)
+
+#This is not a true numeric attribute, as it's not used for counting or measurement. It is instead a categrical attribute with nominal data, so I will convert it to a factor.
+
+fire_data$Incident_Station_Area <- as.factor(fire_data$Incident_Station_Area)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Incident_Station_Area))) +
+        geom_bar() + 
+        xlab("Fire Station") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Fires appear more likely to occur closer to some fire station than others. The station around which the most fires occurred is #426, located on Lansdowne Avenue north of Queen street West.
+```
+
+```{r}
+#Incident_Ward
+
+#Definition: This is the municipal ward number in which the fire occurred. Note that these numbers reflect the old 44-ward system, NOT the new 25-ward system.
+
+str(fire_data$Incident_Ward)
+
+#This is not a true numeric field, as it's not used for counting or measurement. It is instead a categorical variable with nominal data, so I will convert it to a factor.
+
+fire_data$Incident_Ward <- as.factor(fire_data$Incident_Ward)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Incident_Ward))) +
+        geom_bar() + 
+        xlab("Municipal Ward") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#As we saw with the Incident_Station_Area attribute, there is geographical variance in the number of fires. It certainly appears that fires may be more likely to occur in some parts of the city than others.
+
+length(which(is.na(fire_data$Incident_Ward)))
+
+fire_data[is.na(fire_data$Incident_Ward), c("Incident_Ward", "Intersection")]
+
+#Looking at the 74 records that are NA, it appears that many of these fires occurred on highways (which are not part of any municipal wards), or occurred on or close to boundary streets such as Steeles Avenue (the north side of which is technically not part of the City of Toronto but which apparently still is serviced by TFS). In all cases, approximate ward can easily be found on Google Maps using longitude and latitude. I used the following map: https://www.google.com/maps/d/viewer?vpsrc=0&ctz=300&ie=UTF8&t=h&oe=UTF8&msa=0&mid=1GVzAjujA652hcRVy7TdHpWwDM3Y&ll=43.80021317824236%2C-79.14074482543947&z=15
+
+fire_data[is.na(fire_data$Incident_Ward), c("Incident_Ward", "Latitude", "Longitude")]
+
+#One missing observation lacks longitude and latitude, so the Ward was derived from the location of the responding fire station.
+
+fire_data[is.na(fire_data$Incident_Ward), c("Incident_Ward")] <- as.factor(c(44, 3, 8, 1, 7, 3, 3, 3, 2, 8, 41, 8, 7, 29, 24, 10, 23, 6, 12, 7, 3, 1, 8, 3, 3, 32, 24, 24, 3, 24, 15, 8, 2, 18, 1, 44, 19, 19, 2, 3, 38, 24, 7, 18, 1, 1, 6, 7, 2, 1, 10, 11, 24, 3, 5, 5, 10, 35, 3, 29, 3, 31, 8, 24, 10, 11, 41, 23, 22, 7, 24, 39, 28, 44))
+
+length(fire_data[is.na(fire_data$Incident_Ward), "Incident_Ward"])
+
+#I can't find any way to convert the 44 pre-2018 municipal wards in this attribute to the new municipal wards established in 2018. However, it is possible to reduce the cardinality of this attribute by combining the pre-2018 municipal wards so that they correspond to the old provincial electoral ridings. For example, Ward 1 and Ward 2 made up the provincial district of Etobicoke North; Ward 3 and Ward 4 made up Etobicoke Centre; Ward 43 and Ward 44 made up Scarborough East, etc. A list of the old municipal wards can be found here: https://www.toronto.ca/city-government/data-research-maps/neighbourhoods-communities/ward-profiles/44-ward-model/
+
+fire_data$Incident_Ward <- as.factor(ifelse(fire_data$Incident_Ward %in% c("1", "2"), "Etobicoke North", ifelse(fire_data$Incident_Ward %in% c("3", "4"), "Etobicoke Centre", ifelse(fire_data$Incident_Ward %in% c("5", "6"), "Etobicoke-Lakeshore", ifelse(fire_data$Incident_Ward %in% c("7", "8"), "York West", ifelse(fire_data$Incident_Ward %in% c("9", "10"), "York Centre", ifelse(fire_data$Incident_Ward %in% c("11", "12"), "York South-Weston", ifelse(fire_data$Incident_Ward %in% c("13", "14"), "Parkdale-High Park", ifelse(fire_data$Incident_Ward %in% c("15", "16"), "Eglinton-Lawrence", ifelse(fire_data$Incident_Ward %in% c("17", "18"), "Davenport", ifelse(fire_data$Incident_Ward %in% c("19", "20"), "Trinity-Spadina", ifelse(fire_data$Incident_Ward %in% c("21", "22"), "St. Paul's", ifelse(fire_data$Incident_Ward %in% c("23", "24"), "Willowdale", ifelse(fire_data$Incident_Ward %in% c("25", "26"), "Don Valley West", ifelse(fire_data$Incident_Ward %in% c("27", "28"), "Toronto Centre-Rosedale", ifelse(fire_data$Incident_Ward %in% c("29", "30"), "Toronto-Danforth", ifelse(fire_data$Incident_Ward %in% c("31", "32"), "Beaches-East York", ifelse(fire_data$Incident_Ward %in% c("33", "34"), "Don Valley East", ifelse(fire_data$Incident_Ward %in% c("35", "36"), "Scarborough Southwest", ifelse(fire_data$Incident_Ward %in% c("37", "38"), "Scarborough Centre", ifelse(fire_data$Incident_Ward %in% c("39", "40"), "Scarborough Agincourt", ifelse(fire_data$Incident_Ward %in% c("41", "42"), "Scarborough-Rouge River", "Scarborough East"))))))))))))))))))))))
+
+str(fire_data$Incident_Ward)
+
+summary(fire_data$Incident_Ward)
+
+#This categorical attribute now has 22 levels.
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Incident_Ward))) +
+        geom_bar() + 
+        xlab("Municipal Ward") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#As we can now see more clearly, fires occur more frequently in some parts of the city. The two parts of the city with the greatest number are located in downtown Toronto: Toronto Centre-Rosedale and Trinity-Spadina.
+```
+
+```{r}
+#Initial_CAD_Event_Type
+
+#Definition: The first event type entered in the Computer-Aided Dispatch system for the fire. 
+
+str(fire_data$Initial_CAD_Event_Type)
+
+table(fire_data$Initial_CAD_Event_Type)
+
+#This is a categorical variable with nominal data and 62 levels. They are:
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Initial_CAD_Event_Type))) +
+        geom_bar() + 
+        xlab("Initial_CAD_Event_Type") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#From the plot, three things are apparent at once: the distribution is imbalanced, with almost half the observations consisting of one level ("FIR"); the attribute has very high cardinality; and the levels consist exclusively of alphabetical codes, with no description.
+
+#I was provided a document by Kevin Ku from the City of Toronto that describes these codes and groups them into several clusters. Grouping these codes together as per that document will greatly clarify the data in this attribute, while reducing cardinality.
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[1:2] <- "Call Check"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[2:3] <- "Carbon Monoxide Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[3:32] <- "Fire Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[4:5] <- "Hazardous Materials Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[5:6] <- "Island/BBCCA Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[6] <- "Lake Events"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[7:13] <- "Medical Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[8:9] <- "Natural Gas Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[9] <- "Police Assist Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[10] <- "Medical Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[11:13] <- "Vehicle Accident Response"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[10] <- "Rescue Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[12:17] <- "Vehicle Fire Event"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[13] <- "Water Problem"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+levels(fire_data$Initial_CAD_Event_Type)[14] <- "Wires Down"
+
+levels(fire_data$Initial_CAD_Event_Type)
+
+str(fire_data$Initial_CAD_Event_Type)
+
+#The attribute has been reduced to 14 levels.
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Initial_CAD_Event_Type))) +
+        geom_bar() + 
+        xlab("Initial CAD Event Type") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Initial_CAD_Event_Type == "Fire Event")) / length(fire_data$Initial_CAD_Event_Type), 3)
+
+#The most common level is Fire Event, which makes up 79.9% of the observations.
+```
+
+```{r}
+#Intersection
+
+#Definition: The nearest major or minor intersection in the ward of the incident
+
+str(fire_data$Intersection)
+
+head(summary(fire_data$Intersection))
+
+#There are other attributes that contain more precise geographical information with much lower cardinality, such as station and ward. Additionally, there are attributes for longitude and latitude. The existence of those attributes makes this one redundant, so I will discard it.
+
+fire_data$Intersection <- NULL
+```
+
+```{r}
+#Last_TFS_Unit_Clear_Time
+
+#Definition: The date and time at which the last Toronto Fire Services unit left the scene of the fire.
+
+str(fire_data$Last_TFS_Unit_Clear_Time)
+
+#This attribute was imported as a factor, it must be converted to a datetime format.
+
+fire_data$Last_TFS_Unit_Clear_Time <- as.character(fire_data$Last_TFS_Unit_Clear_Time)
+fire_data$Last_TFS_Unit_Clear_Time <- as.POSIXct(fire_data$Last_TFS_Unit_Clear_Time, format = "%Y-%m-%dT%H:%M:%S")
+
+str(fire_data$Last_TFS_Unit_Clear_Time)
+
+summary(fire_data$Last_TFS_Unit_Clear_Time)
+
+summary(fire_data[!is.na(fire_data$Fire_Under_Control_Time), c("Fire_Under_Control_Time", "Last_TFS_Unit_Clear_Time")])
+
+head(select(fire_data, Fire_Under_Control_Time, Last_TFS_Unit_Clear_Time))
+
+#Based on the mean and median, the time between the fire being under control and the last TFS unit leaving the scene is very short, so the data distribution by year, month and hour will look essentially similar as for Fire_Under_Control_Time above.
+```
+
+```{r}
+#Latitude
+
+#Definition: Latitude of nearest major or minor intersection in the ward of the fire incident
+
+str(fire_data$Latitude)
+
+summary(fire_data$Latitude)
+
+#This is a quantitative, numerical attribute containing ratio data.
+
+#A further analysis of Latitude (along with Longitude) will be conducted in the bivariate analysis section of this project. The missing data in this attribute here will be dealt with below together with longitude.
+```
+
+```{r}
+#Level_Of_Origin
+
+#Definition: A code and description given by the OFM to describe the level of the structure where a fire originated.
+
+str(fire_data$Level_Of_Origin)
+
+summary(fire_data$Level_Of_Origin)
+
+#This is a categorical attribute with nominal data and 58 levels. They are:
+
+levels(fire_data$Level_Of_Origin)
+
+round(length(which(is.na(fire_data$Level_Of_Origin))) / length(fire_data$Level_Of_Origin), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Level_Of_Origin <- as.character(fire_data$Level_Of_Origin)
+fire_data$Level_Of_Origin[is.na(fire_data$Level_Of_Origin)] <- "Missing"
+fire_data$Level_Of_Origin <- as.factor(fire_data$Level_Of_Origin)
+str(fire_data$Level_Of_Origin)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Level_Of_Origin))) +
+        geom_bar() + 
+        xlab("Level of Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Codes such as 001, 002, 003... refer to the above ground floor of the structure where the fire originated. Codes such as B01, B02, B03, refer to the basement floors of the structure where the fire originated. Some codes are not described, but I can relabel these levels with the help of the OFM's Codes List.
+
+levels(fire_data$Level_Of_Origin)
+
+levels(fire_data$Level_Of_Origin)[49:51] <- "Other"
+
+levels(fire_data$Level_Of_Origin)
+
+levels(fire_data$Level_Of_Origin)[50] <- "Not Applicable"
+
+#I will also group basement together, as for most basement levels there are negligible numbers of observations.
+
+levels(fire_data$Level_Of_Origin)[51:56] <- "Basement"
+
+#Finally, I will group together the various levels that are clearly not on the ground floor (002, 003, etc.)
+
+levels(fire_data$Level_Of_Origin)[2:48] <- "Upper Floors"
+
+#This attribute how has 6 levels:
+
+levels(fire_data$Level_Of_Origin)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Level_Of_Origin))) +
+        geom_bar() + 
+        xlab("Level of Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#Longitude
+
+#Definition: Longitude of nearest major or minor intersection in the ward of the fire incident
+
+str(fire_data$Longitude)
+
+summary(fire_data$Longitude)
+
+#This is a quantitative attribute containing ratio data.
+
+#A further analysis of Longitude (along with Latitude) will be conducted in the bivariate analysis section.
+
+#There is one observation where both Longitude and Latitude is missing.
+
+fire_data[is.na(fire_data$Longitude), c("Incident_Station_Area", "Incident_Ward", "Latitude", "Longitude")]
+
+#I will impute the latitude and longitude of the fire station, which can easily be found using Google Maps.
+
+fire_data[is.na(fire_data$Longitude), c("Latitude", "Longitude")] <- c(43.7941779, -79.1637706)
+
+c(fire_data$Latitude[12662], fire_data$Longitude[12662])
+```
+
+```{r}
+#Material_First_Ignited
+
+#Definition: A code and description assigned to the fire incident by the Ontario Fire Marshal (OFM). It describes the material that was first ignited.
+
+str(fire_data$Material_First_Ignited)
+sum(is.na(fire_data$Material_First_Ignited))
+summary(fire_data$Material_First_Ignited)
+
+#This is a categorical attribute containing nominal data. There are 53 levels:
+
+levels(fire_data$Material_First_Ignited)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Material_First_Ignited))) +
+        geom_bar() + 
+        xlab("Material First Ignited") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Material_First_Ignited == "99 - Undetermined (formerly 98)")) / length(fire_data$Material_First_Ignited), 3)
+
+#There is great variance among the different levels of this attribute, with the most common level ("Undetermined") making up 15.2% of the data, and the least common levels making up a handful of examples.
+
+#The levels in this attribute can be grouped together as per the OFM Codes List, which would significantly reduce the cardinality for this particular attribute from 72 levels.
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[1:7] <- "Building Component"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[2:5] <- "Furniture"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[3:9] <- "Soft Goods/Wearing Apparel"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[4:12] <- "Other Objects"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[5:13] <- "Materials"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[6:8] <- "Gases"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[7:12] <- "Flammable/Combustible Liquids"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[8:14] <- "Miscellaneous"
+
+levels(fire_data$Material_First_Ignited)
+
+levels(fire_data$Material_First_Ignited)[9] <- "Undetermined"
+
+str(fire_data$Material_First_Ignited)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Material_First_Ignited))) +
+        geom_bar() + 
+        xlab("Ignition Source") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Material_First_Ignited == "Other Objects")) / length(fire_data$Material_First_Ignited), 3)
+
+#The attribute has a much more manageable 9 levels now. The most common level is Other Objects (books, newspapers, cleaning supplies, insulation, waste, vehicles), which makes up 30.3% of the observations.
+```
+
+```{r}
+#Method_Of_Fire_Control
+
+#Definition: A code and description given by the OFM to describe the method of fire control.
+
+str(fire_data$Method_Of_Fire_Control)
+
+#This is a categorical attribute with nominal data. There are 5 levels:
+
+summary(fire_data$Method_Of_Fire_Control)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Method_Of_Fire_Control))) +
+        geom_bar() + 
+        xlab("Method of Fire Control") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Method_Of_Fire_Control == "1 - Extinguished by fire department")) / length(fire_data$Method_Of_Fire_Control), 3)
+
+#It not surprising that a majority of the fires (70.1%) were extinguished by the fire department; it can be assumed that in most cases, the fire department is only called when the fire cannot be put out by civilians at the scene.
+```
+
+```{r}
+#Number_of_responding_apparatus
+
+#Definition: Number of TFS responding units
+
+str(fire_data$Number_of_responding_apparatus)
+summary(fire_data$Number_of_responding_apparatus)
+
+#This attribute contains quantitative, ratio data.
+
+table(fire_data$Number_of_responding_apparatus)
+
+round(length(which(fire_data$Number_of_responding_apparatus <= 6)) / length(fire_data$Number_of_responding_apparatus), 3)
+
+#The two most common values are 1 and 6. This makes sense given the operating procedures of TFS: any residential fire, no matter how small, are addressed with six units. 64.7% of fires are addressed with 6 units or less.
+
+boxplot(fire_data$Number_of_responding_apparatus)
+
+table(boxplot(fire_data$Number_of_responding_apparatus, plot = FALSE)$out)
+
+#Observations in which 15 or more TFS apparatuses responded to a fire are mathematical outliers.
+
+round(length(which(fire_data$Number_of_responding_apparatus >= 15)) / length(fire_data$Number_of_responding_apparatus), 3)
+
+#12.1% of the data consists of mathematical outliers. However, there is no indication that these outliers represent incorrect data - some fires simply require greater resources. I can find no reason to delete these observations.
+
+barplot(table(fire_data$Number_of_responding_apparatus), xlim = c(1,14))
+```
+
+```{r}
+#Number_of_responding_personnel
+
+#Definition: Number of TFS responding personnel
+
+str(fire_data$Number_of_responding_personnel)
+summary(fire_data$Number_of_responding_personnel)
+
+#This attribute contains quantitative, ratio data.
+
+table(fire_data$Number_of_responding_personnel)
+
+boxplot(fire_data$Number_of_responding_personnel)
+
+table(boxplot(fire_data$Number_of_responding_personnel, plot = FALSE)$out)
+
+round(length(which(fire_data$Number_of_responding_personnel >= 52)) / length(fire_data$Number_of_responding_personnel), 3)
+
+#Instances in which 52 or more firefighters responded to a fire are mathematical outliers - 9.8% of the observations. However, there is no indication that these outliers represent incorrect data - some fires simply require greater resources. I can find no reason to delete these observations.
+
+barplot(table(fire_data$Number_of_responding_personnel), xlim = c(1, 55))
+```
+
+```{r}
+#Possible_Cause
+
+#Definition: A code and description assigned to the fire incident by the Ontario Fire Marshal (OFM). It describes the possible cause of the fire.
+
+str(fire_data$Possible_Cause)
+sum(is.na(fire_data$Possible_Cause))
+summary(fire_data$Possible_Cause)
+
+#This is a categorical attribute with nominal data. There are 19 levels:
+
+levels(fire_data$Possible_Cause)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Possible_Cause))) +
+        geom_bar() + 
+        xlab("Possible Cause") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Possible_Cause == "99 - Undetermined")) / length(fire_data$Possible_Cause), 3)
+
+#The observations are varied, with the most common level ("Undetermined") making up 20.4% of the data.
+
+#It is possible to reduce the cardinality of this attribute using the groups in the OFM Codes List document.
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[1:2] <- "Accidental"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[2:3] <- "Design/Construction/Maintenance Deficiency"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[3:5] <- "Misuse of Ignition Source"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[4:7] <- "Misuse of Material First Ignited"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[5:6] <- "Mechanical/Electrical Failure"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[6:9] <- "Other"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[7] <- "Accidental"
+
+levels(fire_data$Possible_Cause)
+
+levels(fire_data$Possible_Cause)[7] <- "Undetermined"
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Possible_Cause))) +
+        geom_bar() + 
+        xlab("Possible Cause") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Possible_Cause == "Misuse of Ignition Source")) / length(fire_data$Possible_Cause), 3)
+
+#With the cardinality reduction to seven levels, Undetermined is now the third most common attribute. The most common level is now "Misuse of Ignition Source," making up 25% of the observations.
+```
+
+```{r}
+#Property_Use
+
+#Definition: A code and description assigned to the fire incident by the Ontario Fire Marshal (OFM). It describes the use of the property where the fire occurred.
+
+str(fire_data$Property_Use)
+sum(is.na(fire_data$Property_Use))
+summary(fire_data$Property_Use)
+
+#This is a categorical attribute with nominal data and high cardinality. There are 270 levels.
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Property_Use))) +
+        geom_bar() + 
+        xlab("Property Use") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#The cardinality of this attribute is so high that it not possible even to read the graph. It is possible to reduce the cardinality of this attribute using the groups in the OFM Codes List document.
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[1:43] <- "Assembly Occupancies"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[2:18] <- "Institutional Occupancies"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[3:26] <- "Residential"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[4:19] <- "Business/Personal Services Occupancies"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[5:31] <- "Mercantile"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[6:83] <- "Industrial Occupancies"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[7:51] <- "Miscellaneous"
+
+levels(fire_data$Property_Use)
+
+levels(fire_data$Property_Use)[8:27] <- "Vehicles"
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Property_Use))) +
+        geom_bar() + 
+        xlab("Property Use") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+length(which(is.na(fire_data$Property_Use)))
+
+round(length(which(fire_data$Property_Use == "Residential")) / length(fire_data$Property_Use), 3)
+
+#The cardinality has been reduced to eight levels. The most common level is "Residential" - 55.7% of fires occurred at residential properties.
+
+#There is one missing observation. for which I will impute the mode, in this case "Residential." This is not the preferred way to deal with missing values, as the risk with imputation is that it will result in data loss, but for one missing observation out of 12,000+ it represents little risk and will suffice in this case.
+
+fire_data$Property_Use[is.na(fire_data$Property_Use)] <- "Residential"
+```
+
+```{r}
+#Smoke_Alarm_at_Fire_Origin
+
+#Definition: A code and description assigned by the OFM to describe the presence and functioning of a smoke alarm at the fire's point of origin.
+
+str(fire_data$Smoke_Alarm_at_Fire_Origin)
+
+#This is a categorical variable with nominal data and 5 levels. The levels are:
+
+summary(fire_data$Smoke_Alarm_at_Fire_Origin)
+
+round(length(which(is.na(fire_data$Smoke_Alarm_at_Fire_Origin))) / length(fire_data$Smoke_Alarm_at_Fire_Origin), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Smoke_Alarm_at_Fire_Origin <- as.character(fire_data$Smoke_Alarm_at_Fire_Origin)
+fire_data$Smoke_Alarm_at_Fire_Origin[is.na(fire_data$Smoke_Alarm_at_Fire_Origin)] <- "Missing"
+fire_data$Smoke_Alarm_at_Fire_Origin <- as.factor(fire_data$Smoke_Alarm_at_Fire_Origin)
+str(fire_data$Smoke_Alarm_at_Fire_Origin)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Smoke_Alarm_at_Fire_Origin))) +
+        geom_bar() + 
+        xlab("Smoke Alarm at Fire Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Smoke_Alarm_at_Fire_Origin == "2 - Floor/suite of fire origin: Smoke alarm present and operated")) / length(fire_data$Smoke_Alarm_at_Fire_Origin), 3)
+
+#The most common level is "Smoke Alarm Present and Operated," which makes up 31.3% of the observations.
+
+```
+
+```{r}
+#Smoke_Alarm_at_Fire_Origin_Alarm_Failure
+
+#Definition: A code and description assigned by the OFM to describe the failure of the smoke alarm
+
+str(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+
+#This is a categorical variable with nominal data 11 levels. They are:
+
+summary(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+
+round(length(which(is.na(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure))) / length(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure <- as.character(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure[is.na(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)] <- "Missing"
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure <- as.factor(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+str(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure))) +
+        geom_bar() + 
+        xlab("Smoke Alarm Failure at Fire Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure == "98 - Not applicable: Alarm operated OR presence/operation undetermined")) / length(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure), 3)
+
+#The most common level is "Not Applicable," which makes up 49.4% of the observations.
+```
+
+```{r}
+#Smoke_Alarm_at_Fire_Origin_Alarm_Type
+
+#Description: A code and description assigned by the OFM to describe the type of fire alarm where the fire originated
+
+str(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+
+#This is a categorical variable with nominal data. There are 6 levels:
+
+summary(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+
+round(length(which(is.na(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type))) / length(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type <- as.character(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type[is.na(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)] <- "Missing"
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type <- as.factor(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+str(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type))) +
+        geom_bar() + 
+        xlab("Smoke Alarm Type at Fire Origin") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type == "8 - Not applicable - no smoke alarm or presence undetermined")) / length(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type), 3)
+
+#We can see that there are a diversity of smoke alarms used, as well many observations which are marked Not Applicable (16.5%)
+```
+
+```{r}
+#Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation
+
+#Description: A code and description assigned by the OFM to describe the impact of the smoke alarm on persons evacuating a building during a fire
+
+str(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+
+#This is a categorical attribute with nominal data and 7 levels. The levels are:
+
+summary(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+
+levels(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+
+#Two levels describe not applicable observations. These can be combined together into one level.
+
+levels(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)[5:6] <- "Not Applicable"
+
+round(length(which(is.na(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation))) / length(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation <- as.character(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation[is.na(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)] <- "Missing"
+fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation <- as.factor(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+str(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+
+ggplot(fire_data, aes(x = reorder_size(Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation))) +
+        geom_bar() + 
+        xlab("Smoke Alarm Impact on Evacuation") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation == "Missing" | fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation == "Not Applicable" | fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation == "9 - Undetermined")) / length(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation), 3)
+
+#67.3% of the data in this attribute is either missing, not applicable, or unattributed.
+```
+
+```{r}
+#Smoke_Spread
+
+#Definition: A code and description assigned by the OFM to describe the spread of smoke during the fire.
+
+str(fire_data$Smoke_Spread)
+
+#This is a categorical attribute with nominal data and 10 levels. The levels are:
+
+summary(fire_data$Smoke_Spread)
+
+round(length(which(is.na(fire_data$Smoke_Spread))) / length(fire_data$Smoke_Spread), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Smoke_Spread <- as.character(fire_data$Smoke_Spread)
+fire_data$Smoke_Spread[is.na(fire_data$Smoke_Spread)] <- "Missing"
+fire_data$Smoke_Spread <- as.factor(fire_data$Smoke_Spread)
+str(fire_data$Smoke_Spread)
+
+ggplot(fire_data, aes(x = reorder_size(Smoke_Spread))) +
+        geom_bar() + 
+        xlab("Smoke Spread") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Smoke_Spread == "2 - Confined to part of room/area of origin")) / length(fire_data$Smoke_Spread), 3)
+
+round(length(which(fire_data$Smoke_Spread != "2 - Confined to part of room/area of origin" & fire_data$Smoke_Spread != "Missing" & fire_data$Smoke_Spread != "9 - Confined to roof/exterior structure" & fire_data$Smoke_Spread != "99 - Undetermined")) / length(fire_data$Smoke_Spread), 3)
+
+#Other than missing data, the most common level in this attribute is "Confined to part of room/area of origin." (19%). 47% of the fires were recorded as having spread beyond to the room/area of origin.
+```
+
+```{r}
+#Sprinkler_System_Operation
+
+#Definition: A code and description assigned by the OFM to describe the functining of the sprinkler system during the fire.
+
+str(fire_data$Sprinkler_System_Operation)
+
+#This is a categorical variable with nominal data. There are 7 levels in this attribute. They are:
+
+summary(fire_data$Sprinkler_System_Operation)
+
+round(length(which(is.na(fire_data$Sprinkler_System_Operation))) / length(fire_data$Sprinkler_System_Operation), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Sprinkler_System_Operation <- as.character(fire_data$Sprinkler_System_Operation)
+fire_data$Sprinkler_System_Operation[is.na(fire_data$Sprinkler_System_Operation)] <- "Missing"
+fire_data$Sprinkler_System_Operation <- as.factor(fire_data$Sprinkler_System_Operation)
+str(fire_data$Sprinkler_System_Operation)
+
+ggplot(fire_data, aes(x = reorder_size(Sprinkler_System_Operation))) +
+        geom_bar() + 
+        xlab("Sprinkler System Operation") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Sprinkler_System_Operation == "Missing" | fire_data$Sprinkler_System_Operation == "8 - Not applicable - no sprinkler system present" | fire_data$Sprinkler_System_Operation == "9 - Activation/operation undetermined")) / length(fire_data$Sprinkler_System_Operation), 3)
+
+#77.7% of the data in this attribute is either missing, not applicable, or undetermined.
+```
+
+```{r}
+#Sprinkler_System_Presence
+
+#Definition: A code and description assigned by the OFM to describe the presence of a sprinkler system during the fire.
+
+str(fire_data$Sprinkler_System_Presence)
+
+#This is a categorical attribute with nominal data and 4 levels. The levels are:
+
+summary(fire_data$Sprinkler_System_Presence)
+
+round(length(which(is.na(fire_data$Sprinkler_System_Presence))) / length(fire_data$Sprinkler_System_Presence), 3)
+
+#As with some other attributes that we have already encountered, about a quarter (27.5%, to be exact) of the observations are missing. As I have done with other attributes, rather than risking the introduction of bias into my models or data loss, I will create an additional level, "Missing", to flag that the data is missing.
+
+fire_data$Sprinkler_System_Presence <- as.character(fire_data$Sprinkler_System_Presence)
+fire_data$Sprinkler_System_Presence[is.na(fire_data$Sprinkler_System_Presence)] <- "Missing"
+fire_data$Sprinkler_System_Presence <- as.factor(fire_data$Sprinkler_System_Presence)
+str(fire_data$Sprinkler_System_Presence)
+
+ggplot(fire_data, aes(x = reorder_size(Sprinkler_System_Presence))) +
+        geom_bar() + 
+        xlab("Sprinkler System Presence") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+round(length(which(fire_data$Sprinkler_System_Presence == "3 - No sprinkler system")) / length(which(fire_data$Sprinkler_System_Presence != "Missing")), 3)
+
+#In 59% of the fires where the sprinkler data is not missing, there was no sprinkler system present.
+```
+
+```{r}
+#Status_of_Fire_On_Arrival
+
+#Definition: A code and description assigned by the OFM to describe the status of the fire upon the firefighters' arrival.
+
+str(fire_data$Status_of_Fire_On_Arrival)
+
+#This is a categorical attribute with nominal data and 8 levels. The levels are:
+
+summary(fire_data$Status_of_Fire_On_Arrival)
+
+ggplot(fire_data, aes(x = reorder_size(Status_of_Fire_On_Arrival))) +
+        geom_bar() + 
+        xlab("Status of Fire on Arrival") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#The barplot shows some variance in the fire statuses on arrival, but generally speaking we can see that the majority of fires do not at first glance appear severe.
+
+round(length(which(fire_data$Status_of_Fire_On_Arrival == "1 - Fire extinguished prior to arrival" | fire_data$Status_of_Fire_On_Arrival == "2 - Fire with no evidence from street" | fire_data$Status_of_Fire_On_Arrival == "3 - Fire with smoke showing only - including vehicle, outdoor fires")) / length(fire_data$Status_of_Fire_On_Arrival), 3)
+
+#71.6% of fires had either been extinguished upon arrival, were not visible from the street, or were showing smoke only as opposed to flames.
+```
+
+```{r}
+#TFS_Alarm_Time
+
+#Definition: The date and time that TFS was alerted to the fire.
+
+str(fire_data$TFS_Alarm_Time)
+
+#This attribute was imported as a factor, it must be convert to a datetime format.
+
+fire_data$TFS_Alarm_Time <- as.character(fire_data$TFS_Alarm_Time)
+
+fire_data$TFS_Alarm_Time <- as.POSIXct(fire_data$TFS_Alarm_Time, format = "%Y-%m-%dT%H:%M:%S")
+
+str(fire_data$TFS_Alarm_Time)
+
+summary(fire_data$TFS_Alarm_Time)
+```
+
+```{r}
+#TFS_Arrival_Time
+
+#Definition: The date and time that the first TFS unit arrived at the incident.
+
+str(fire_data$TFS_Arrival_Time)
+
+#The attribute was imported as a factor, it must be converted to a timestamp format.
+
+fire_data$TFS_Arrival_Time <- as.character(fire_data$TFS_Arrival_Time)
+
+fire_data$TFS_Arrival_Time <- as.POSIXct(fire_data$TFS_Arrival_Time, format = "%Y-%m-%dT%H:%M:%S")
+
+str(fire_data$TFS_Arrival_Time)
+
+summary(fire_data$TFS_Alarm_Time)
+```
+
+```{r}
+#TFS_Firefighter_Casualties
+
+#Definition: The number of TFS firefighter casualties caused by the fire. 
+
+#This is one of the attributes from which the class attribute was derived, so has become redundant with its information contained in the class variable.
+
+fire_data$TFS_Firefighter_Casualties <- NULL  
+```
+
+```{r}
+#human_risk
+
+#Definition: this is the class variable. If the fire caused human casualties (civilian or firefighter), or has resulted in civilians being rescued by firefighters, it will have the value of 1; otherwise, it will have the value of zero.
+
+str(fire_data$human_risk)
+
+summary(fire_data$human_risk)
+
+ggplot(fire_data, aes(x = reorder_size(fire_data$human_risk))) +
+        geom_bar() + 
+        xlab("Human Risk")
+
+round(length(which(fire_data$human_risk == "1")) / length(fire_data$human_risk), 3)
+
+#The class variable is imbalanced: only in approximately 8.1% of cases is it true, meaning that in 91.9% cases it is false. This is a class imbalance of approximately 12:1. 
+```
+New time variables
+
+There are 5 datetime attributes that represent a specific stage in a fire incident. These attributes are, in order:
+
+TFS_Alarm_Time
+TFS_Arrival_Time
+Ext_agent_app_or_defer_time
+Fire_Under_Control_Time
+Last_TFS_Unit_Clear_Time
+
+I am interested in the response time, which I define as the time between the TFS_Alarm_Time and TFS_Arrival_Time, and in the time it takes to fight the fire, which I define as the time between the TFS_Arrival_Time and the Fire_Under_Control_Time. I will extract the time, in seconds, for these two intervals.
+```{r}
+#firefighting time
+
+fire_data$firefighting_time <- as.numeric(c(fire_data$Fire_Under_Control_Time - fire_data$TFS_Alarm_Time))
+
+head(fire_data$firefighting_time)
+
+summary(fire_data$firefighting_time)
+
+#We can see an NA value here, because of the NA value we observed in the Fire_Under_Control_Time attribute. We can fill in this NA value using the median of the firefighting_time attribute (662 seconds). Admittedly, using the median is usually not the best strategy for replacing values, but for one NA only as in this case it is sufficient.
+
+fire_data[is.na(fire_data$Fire_Under_Control_Time),]
+
+#Index of NA is 12443. Will fill with TFS_Alarm_Time + median of firefighting time.
+
+fire_data$Fire_Under_Control_Time[12443] <- fire_data$TFS_Alarm_Time[12443] + 662
+
+#Now, filling in NA value for firefighting_time with the median.
+
+fire_data$firefighting_time[12443] <- 662
+
+boxplot(fire_data$firefighting_time)
+
+table(boxplot(fire_data$firefighting_time, plot = FALSE)$out)
+
+round(length(which(fire_data$firefighting_time >= 1958)) / length(fire_data$firefighting_time), 3)
+
+#As the boxplot reveals, 9.3% of the observations are mathematical outliers here. This data is not likely to be normally distributed with no many outliers.
+
+barplot(table(fire_data$firefighting_time))
+
+round(length(which(fire_data$firefighting_time <= 1200)) / length(fire_data$firefighting_time), 3)
+
+#Confirming the findings of the boxplot, we can see that the data is not normally distributed: the data has a pronounced right tail. About 80% of fires are declared under control within 20 minutes of TFS being alerted, though there are significant outliers, including one fire that took over a day to subdue.
+
+#There is no indication that the outliers represent dirty or noisy data - some fires are simply more fierce and require more time to fight. I can find no reason to delete these observations.
+```
+
+```{r}
+#response_time
+
+fire_data$response_time <- as.numeric(c(fire_data$TFS_Arrival_Time - fire_data$TFS_Alarm_Time))
+
+summary(fire_data$response_time)
+
+#I immediately notice that the mode and median are almost the same. The maximum here, 40942 seconds, seems like incorrect data or highly anomalous - it simply is not possible that it took firefighters 11 hours to respond to a fire when the median response time is around 5 minutes.
+
+table(fire_data$response_time)
+
+#The second longest response time works out to 27 minutes, so the maximum here truly is a freak outlier and will be deleted.
+
+fire_data <- fire_data[-3042,]
+
+summary(fire_data$response_time)
+
+barplot(table(fire_data$response_time))
+
+#Sure enough, the distribution of response_time appears close to being normally distributed, though with a right tail.
+
+boxplot(fire_data$response_time)
+
+table(boxplot(fire_data$response_time, plot = FALSE)$out)
+
+round(length(which(fire_data$response_time <= 84 | fire_data$response_time >= 529)) / length(fire_data$response_time), 2)
+
+#There are mathematical outliers in this attribute as well, though fewer compared to the firefighting_time attribute - only 3% of the observations in this attribute are outliers, compared to ~9% for the firefighting_time attribute. Other than the outlier that was already removed, there is no indication that these outliers represent dirty or noisy data - some fires simply require greater resources and time. I can find no reason to delete these observations.
+```
+
+Additional temporal attributes
+
+Having analyzed the datetime data in my analysis of the Ex_agent_app_of_defer_time attribute, I believe that it will be interesting and potentially useful to isolate the year, month, season and time of day broken out into individual attributes. I will use the TFS_Alarm_Time as the basis for these new attributes. All these attributes are categorical, ordinal, and cyclic. 
+
+```{r}
+#Extract year
+fire_data$year <- as.factor(year(as.Date(fire_data$TFS_Alarm_Time, format = "%Y-%m-%d")))
+
+#Extract month
+fire_data$month <- as.factor(month(as.Date(fire_data$TFS_Alarm_Time, format = "%Y-%m-%d")))
+
+#Extract day
+fire_data$day <- as.factor(day(as.Date(fire_data$TFS_Alarm_Time, format = "%Y-%m-%d")))
+
+#Extract whether day of week
+fire_data$day_of_week <- as.factor(wday(as.Date(fire_data$TFS_Alarm_Time, format = "%Y-%m-%d")))
+
+#Extract hour
+fire_data$hour <- as.factor(hour(as.POSIXct(fire_data$TFS_Alarm_Time, format = "%Y-%m-%d %H:%M:%S")))
+
+#Group months together into seasons
+fire_data$season <- as.factor(ifelse(fire_data$month %in% 1:3, "Winter", ifelse(fire_data$month %in% 4:6, "Spring", ifelse(fire_data$month %in% 7:9, "Summer", "Autumn"))))
+
+#Group hours into parts of day
+fire_data$time_of_day <- as.factor(ifelse(fire_data$hour %in% 8:15, "afternoon", ifelse(fire_data$hour %in% 16:23, "night", "morning")))
+```
+
+BIVARIATE ANALYSIS
+
+```{r}
+#Spatial analysis
+
+plot(x = fire_data$Longitude, y = fire_data$Latitude)
+
+#From the scatterplot, we can see visually that the density of fires varies considerably within the city, and that the densest concentration of fires is downtown. One can also see the outlines of major thoroughfares such as Queen, Bloor, Danforth, Yonge and others, which appear to have highest concentrations of fires than other parts of the city. 
+
+#Looking at our class attritube, there do appear to be sectors in the city with a higher density of the riskest fires.
+
+ggplot(data = fire_data, aes(Longitude, Latitude, color = human_risk)) +
+  geom_point() +
+  scale_color_manual(values = c("1" = "red", "0" = "grey"))
+
+#But the areas with the highest number of high-risk fires don't necessarily correspond to the highest number of total fires.
+
+ggplot(fire_data, aes(x = reorder_size(Incident_Ward), fill = human_risk)) +
+  geom_bar(position = "stack") +
+  xlab("Fires By Ward") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#There is variance in the types of properties that experienced fires in the different parts of the city. While the two wards with the greatest number of fires recorded, Toronto-Rosedale and Trinity-Spadina, look proportionately very similar, the ward with the third greatest number of fires recorded, York Centre, is quite different. Comparing York Centre to Trinity-Spadina: York Centre has a greater number of vehicle fires, a greater number of industrial fires, fewer residential fires, and much fewer fires in assembly areas (bars, theatres, arenas, etc.)
+
+ggplot(fire_data, aes(x = reorder_size(Incident_Ward), fill = Property_Use)) +
+  geom_bar(position = "stack") +
+  xlab("Fire by Property Types, by Ward") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#Median firefighting time for Ignition source
+
+time_ignition <- fire_data %>%
+  group_by(Ignition_Source) %>%
+  summarize(median_time = median(firefighting_time))
+
+ggplot(data = time_ignition, aes(x = reorder_size(Ignition_Source), y = median_time)) +
+  geom_bar(stat = "identity") + 
+  xlab("Ignition Source") +
+  ylab("Median Firefighting Time in Seconds") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#The median firefighting time is highest for Heating Equipment/Chimney (e.g. heaters, fireplaces, chimneys), and Processing Equipment (e.g. incinerators, reactors, furnaces) - ignition sources that already operate on high heat. The lowest median firefighting time is for Cooking Equipment (ovens, microwaves, barbecues, fryers, toasters, etc.)
+```
+
+```{r}
+#Median firefighting time for class variable
+
+f_time_class <- fire_data %>%
+  group_by(human_risk) %>%
+  summarize(median_time = median(firefighting_time))
+
+ggplot(data = f_time_class, aes(x = human_risk, y = median_time)) +
+  geom_bar(stat = "identity") + 
+  xlab("Fire class") +
+  ylab("Median Firefighting Time in Seconds")
+
+#We can see that the median firefighting time for fires in which humans were killed or rescued is around 150 seconds (2.5 minutes) more than fires in which humans were not killed or rescued.
+```
+
+```{r}
+#Origin of Fire by Season
+
+ggplot(fire_data, aes(x = season, fill = Area_of_Origin)) + 
+  geom_bar(position = "dodge") + 
+  xlab("Season") + 
+  ylab("Number of Fires")
+
+#Indoor fires in Functional Areas (indoors) trend upward during the colder month, then drop as the weather becomes warmer. Outdoor fires, meanwhile, do the exact opposite: their frequency increase in the spring and summer, and drop as the weather gets colder.
+```
+
+```{r}
+#Possible Cause of Fire by Day of the Week
+
+ggplot(fire_data, aes(x = day_of_week, fill = reorder_size(Possible_Cause))) + 
+  geom_bar(position = position_stack()) +
+  coord_flip() +
+  xlab("Day of Week") + 
+  ylab("Number of Fires")
+
+#There isn't much variance in terms of days of the week. The possible fire causes that are directly tied to human activity - Misuse of Ignition Source, Misuse of Material First Ignited, and Accidental - appear slightly more frequent on weekends (days 1 and 7) than during the week (days 2-6).
+```
+
+```{r}
+#Median response grouped by time of day.
+
+response_hour <- fire_data %>%
+  group_by(group_hour = fire_data$hour) %>%
+  summarize(median_time = median(response_time))
+
+ggplot(data = response_hour, aes(x = group_hour, y = median_time)) +
+  geom_bar(stat = "identity") +
+  xlab("Time of Day") +
+  ylab("Median Response Time in Seconds")
+
+#Firefighters' median response time is at its worst late at night and early in the morning, from 11 PM until about 5 AM, when it begins to improve. Overall, response time is pretty consistent regardless of time of day.
+  
+```
+
+```{r}
+#Fires by Area or Origin and Status on Arrival
+
+ggplot(fire_data, aes(x = reorder_size(Area_of_Origin), fill = Status_of_Fire_On_Arrival)) +
+  stat_count(stat = "identity") +
+  xlab("Area of Origin") +
+  ylab("Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Jumping out immediately is the prominent block of blue for fires originating in vehicles. A much larger proportion of vehicle fires are already consuming the entire structure than for any other area of origin. This reflects the small size of most vehicles, as well as their flammability.
+         
+```
+
+Removal of Redundant Attributes
+
+```{r}
+#With year, month, day, day of week, hour, firefighting_time and response_time extracted into other attributes, the datetime fields are redundant and can be removed. I will preserve one: TFS_Alarm_Time, in the event that it is required for any purpose down the road.
+
+fire_data$Ext_agent_app_or_defer_time <- NULL  
+fire_data$Fire_Under_Control_Time <- NULL  
+fire_data$Last_TFS_Unit_Clear_Time <- NULL  
+fire_data$TFS_Arrival_Time <- NULL
+
+#There are several attributes that contain information about fires' geospatial distribution: Incident_Station_Area, Incident_Ward, and Latitude/Longitude. Of these Incident_Ward is the best arrtibute for my analysis, grouping as it does Toronto into 22 different sections. 
+
+fire_data$Incident_Station_Area <- NULL
+fire_data$Latitude <- NULL
+fire_data$Longitude <- NULL
+```
+
+```{r}
+#Correlation Analysis
+
+#I am using Spearman correlation for my numeric data, because none of the numerical attributes are evenly distributed but also because the attributes contain a lot of outliers.
+
+cor_attr <- as.data.frame(fire_data[,c("Exposures", "Number_of_responding_apparatus", "Number_of_responding_personnel", "firefighting_time", "response_time")])
+
+corrplot(cor(cor_attr), method = "number", type = "upper")
+
+#The relationship between Number_of_responding_apparatus and Number_of_responding_personnel are perfectly correlated, which is logical given the way firefighters work (there are x firefighters per truck). To avoid multicollinearity, one of these two attributes should be removed - I select Number_of_responding_apparatus as it is characterized by a higher percentage of outliers. 
+
+fire_data$Number_of_responding_apparatus <- NULL
+
+#There is also a strong positive correlation between the number of responding apparatuses/personnel and the firefighting time. This also is logical: often when a fire is difficult to put out, more personnel is required to fight it. To avoid multicollinearity, one of these two attributes should be removed - I select Number_of_responding_personnel as it is characterized by a higher proportion of outliers. 
+
+fire_data$Number_of_responding_personnel <- NULL
+```
+
+```{r}
+#Chi-square test
+
+chisq.test(fire_data$Area_of_Origin, fire_data$human_risk)
+
+chisq.test(fire_data$Building_Status, fire_data$human_risk)
+
+chisq.test(fire_data$Extent_Of_Fire, fire_data$human_risk)
+
+#P-value > 0.05
+chisq.test(fire_data$Final_Incident_Type, fire_data$human_risk)
+
+chisq.test(fire_data$Fire_Alarm_System_Impact_on_Evacuation, fire_data$human_risk)
+
+chisq.test(fire_data$Fire_Alarm_System_Operation, fire_data$human_risk)
+
+chisq.test(fire_data$Fire_Alarm_System_Presence, fire_data$human_risk)
+
+chisq.test(fire_data$Ignition_Source, fire_data$human_risk)
+
+chisq.test(fire_data$Incident_Ward, fire_data$human_risk)
+
+chisq.test(fire_data$Initial_CAD_Event_Type, fire_data$human_risk)
+
+chisq.test(fire_data$Level_Of_Origin, fire_data$human_risk)
+
+chisq.test(fire_data$Material_First_Ignited, fire_data$human_risk)
+
+chisq.test(fire_data$Method_Of_Fire_Control, fire_data$human_risk)
+
+chisq.test(fire_data$Possible_Cause, fire_data$human_risk)
+
+chisq.test(fire_data$Property_Use, fire_data$human_risk)
+
+chisq.test(fire_data$Smoke_Alarm_at_Fire_Origin, fire_data$human_risk)
+
+chisq.test(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure, fire_data$human_risk)
+
+chisq.test(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type, fire_data$human_risk)
+
+chisq.test(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation, fire_data$human_risk)
+
+chisq.test(fire_data$Smoke_Spread, fire_data$human_risk)
+
+chisq.test(fire_data$Sprinkler_System_Operation, fire_data$human_risk)
+
+chisq.test(fire_data$Sprinkler_System_Presence, fire_data$human_risk)
+
+chisq.test(fire_data$Status_of_Fire_On_Arrival, fire_data$human_risk)
+
+#P-value > 0.05:
+chisq.test(fire_data$year, fire_data$human_risk)
+
+chisq.test(fire_data$month, fire_data$human_risk)
+
+#P-value > 0.05:
+chisq.test(fire_data$day, fire_data$human_risk)
+
+#P-value > 0.05:
+chisq.test(fire_data$day_of_week, fire_data$human_risk)
+
+#P-value > 0.05:
+chisq.test(fire_data$hour, fire_data$human_risk)
+
+#P-value > 0.05:
+chisq.test(fire_data$hour, fire_data$season)
+
+chisq.test(fire_data$hour, fire_data$time_of_day)
+
+#There are six variables for which we cannot reject the null hypothesis of independence: Final_Incident_Type, year, day, day_of_week, hour, and season. The only one of the variables extracted from a datetime attribute that proved not to be independent of the class variable is month. 
+```
+
+```{r}
+#k-Prototypes clustering
+
+#Find the optimal number of clusters:
+
+data.for.cluster <- fire_data[-25]
+
+set.seed(123)
+
+k.max <- 15
+
+wss <- sapply(1:k.max,
+              function(k){kproto(data.for.cluster, k)$tot.withinss})
+
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE,
+     xlab = "Number of clusters K",
+     ylab = "Total within-clusters sum of squares")
+
+#It seems that the optimal number of clusters is 5.
+
+#Cluster around 5 centroids:
+
+cluster.results <- kproto(data.for.cluster, k = 5, iter.max = 20, nstart = 5)
+
+cluster.results
+
+cluster.results[["centers"]]
+```
+
+```{r}
+#Discretization and level reduction
+
+#Area_of_Origin
+fire_data <- group_category(data = fire_data, feature = "Area_of_Origin", threshold = 0.15, update = TRUE)
+fire_data$Area_of_Origin <- as.factor(fire_data$Area_of_Origin)
+table(fire_data$Area_of_Origin)
+
+#Building_Status
+fire_data <- group_category(data = fire_data, feature = "Building_Status", threshold = 0.15, update = TRUE)
+fire_data$Building_Status <- as.factor(fire_data$Building_Status)
+table(fire_data$Building_Status)
+
+#Exposures
+#I will turn this into a yes/no categorical variable
+fire_data$Exposures <- as.factor(ifelse(fire_data$Exposures == 0, "No", "Yes"))
+table(fire_data$Exposures)
+
+#Extent_Of_Fire
+fire_data <- group_category(data = fire_data, feature = "Extent_Of_Fire", threshold = 0.15, update = TRUE)
+fire_data$Extent_Of_Fire <- as.factor(fire_data$Extent_Of_Fire)
+table(fire_data$Extent_Of_Fire)
+
+#Final_Incident_Type
+table(fire_data$Final_Incident_Type)
+#Cannot be further collapsed
+
+#Fire_Alarm_System_Impact_on_Evacuation
+fire_data <- group_category(data = fire_data, feature = "Fire_Alarm_System_Impact_on_Evacuation", threshold = 0.15, update = TRUE)
+fire_data$Fire_Alarm_System_Impact_on_Evacuation <- as.factor(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+table(fire_data$Fire_Alarm_System_Impact_on_Evacuation)
+
+#Fire_Alarm_System_Operation
+fire_data <- group_category(data = fire_data, feature = "Fire_Alarm_System_Operation", threshold = 0.15, update = TRUE)
+fire_data$Fire_Alarm_System_Operation <- as.factor(fire_data$Fire_Alarm_System_Operation)
+table(fire_data$Fire_Alarm_System_Operation)
+
+#Fire_Alarm_System_Presence
+fire_data <- group_category(data = fire_data, feature = "Fire_Alarm_System_Presence", threshold = 0.15, update = TRUE)
+fire_data$Fire_Alarm_System_Presence <- as.factor(fire_data$Fire_Alarm_System_Presence)
+table(fire_data$Fire_Alarm_System_Presence)
+
+#Ignition_Source
+fire_data <- group_category(data = fire_data, feature = "Ignition_Source", threshold = 0.15, update = TRUE)
+fire_data$Ignition_Source <- as.factor(fire_data$Ignition_Source)
+table(fire_data$Ignition_Source)
+
+#Incident Ward
+#Will collapse using business logic - will group into city boroughs: Old Toronto, East York, Scarborough, North York, York, Etobicoke
+
+#To do this, it is necessary to go back to the original data, as the it is easier to map borough from the 44 wards as opposed to the 22 condensed ones.
+
+fire_data2 <- read.csv(url("https://raw.githubusercontent.com/terrygitersos/CKME136/master/Data/Original%20Fire%20Incidents%20Data.csv"), header = TRUE, na.strings = c("","NA"))
+
+ward <- fire_data2[-3042,"Incident_Ward"]
+
+ward[is.na(ward)] <- as.factor(c(44, 3, 8, 1, 7, 3, 3, 3, 2, 8, 41, 8, 7, 29, 24, 10, 23, 6, 12, 7, 3, 1, 8, 3, 3, 32, 24, 24, 3, 24, 15, 8, 2, 18, 1, 44, 19, 19, 2, 3, 38, 24, 7, 18, 1, 1, 6, 7, 2, 1, 10, 11, 24, 3, 5, 5, 10, 35, 3, 29, 3, 31, 8, 24, 10, 11, 41, 23, 22, 7, 24, 39, 28, 44))
+
+fire_data$Incident_Ward <- as.factor(ifelse(ward %in% c(1:6), "Etobicoke", ifelse(ward %in% c(35:44), "Scarborough", ifelse(ward %in% c(7:10, 15:16, 23:25, 33:34), "North York", ifelse(ward %in% c(11:12, 17, 21), "York", ifelse(ward %in% c(26, 29, 31), "East York", "Old Toronto"))))))
+
+table(fire_data$Incident_Ward)
+
+#Initial_CAD_Event_Type
+fire_data <- group_category(data = fire_data, feature = "Initial_CAD_Event_Type", threshold = 0.15, update = TRUE)
+fire_data$Initial_CAD_Event_Type <- as.factor(fire_data$Initial_CAD_Event_Type)
+table(fire_data$Initial_CAD_Event_Type)
+
+#Level_Of_Origin
+fire_data <- group_category(data = fire_data, feature = "Level_Of_Origin", threshold = 0.15, update = TRUE)
+fire_data$Level_Of_Origin <- as.factor(fire_data$Level_Of_Origin)
+table(fire_data$Level_Of_Origin)
+
+#Material_First_Ignited
+fire_data <- group_category(data = fire_data, feature = "Material_First_Ignited", threshold = 0.15, update = TRUE)
+fire_data$Material_First_Ignited <- as.factor(fire_data$Material_First_Ignited)
+table(fire_data$Material_First_Ignited)
+levels(fire_data$Material_First_Ignited)[5] <- "OTHER"
+
+#Method_Of_Fire_Control
+fire_data <- group_category(data = fire_data, feature = "Method_Of_Fire_Control", threshold = 0.15, update = TRUE)
+fire_data$Method_Of_Fire_Control <- as.factor(fire_data$Method_Of_Fire_Control)
+table(fire_data$Method_Of_Fire_Control)
+
+#Possible_Cause
+fire_data <- group_category(data = fire_data, feature = "Possible_Cause", threshold = 0.15, update = TRUE)
+fire_data$Possible_Cause <- as.factor(fire_data$Possible_Cause)
+table(fire_data$Possible_Cause)
+levels(fire_data$Possible_Cause)[4] <- "OTHER"
+
+#Property_Use
+fire_data <- group_category(data = fire_data, feature = "Property_Use", threshold = 0.15, update = TRUE)
+fire_data$Property_Use <- as.factor(fire_data$Property_Use)
+table(fire_data$Property_Use)
+
+#Smoke_Alarm_at_Fire_Origin
+fire_data <- group_category(data = fire_data, feature = "Smoke_Alarm_at_Fire_Origin", threshold = 0.15, update = TRUE)
+fire_data$Smoke_Alarm_at_Fire_Origin <- as.factor(fire_data$Smoke_Alarm_at_Fire_Origin)
+table(fire_data$Smoke_Alarm_at_Fire_Origin)
+
+#Smoke_Alarm_at_Fire_Origin_Alarm_Failure
+fire_data <- group_category(data = fire_data, feature = "Smoke_Alarm_at_Fire_Origin_Alarm_Failure", threshold = 0.15, update = TRUE)
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure <- as.factor(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+table(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Failure)
+
+#Smoke_Alarm_at_Fire_Origin_Alarm_Type
+fire_data <- group_category(data = fire_data, feature = "Smoke_Alarm_at_Fire_Origin_Alarm_Type", threshold = 0.15, update = TRUE)
+fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type <- as.factor(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+table(fire_data$Smoke_Alarm_at_Fire_Origin_Alarm_Type)
+
+#Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation
+fire_data <- group_category(data = fire_data, feature = "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation", threshold = 0.15, update = TRUE)
+
+fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation <- as.factor(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+
+table(fire_data$Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation)
+
+#Smoke_Spread
+fire_data <- group_category(data = fire_data, feature = "Smoke_Spread", threshold = 0.15, update = TRUE)
+fire_data$Smoke_Spread <- as.factor(fire_data$Smoke_Spread)
+table(fire_data$Smoke_Spread)
+
+#Sprinkler_System_Operation
+fire_data <- group_category(data = fire_data, feature = "Sprinkler_System_Operation", threshold = 0.15, update = TRUE)
+fire_data$Sprinkler_System_Operation <- as.factor(fire_data$Sprinkler_System_Operation)
+table(fire_data$Sprinkler_System_Operation)
+
+#Sprinkler_System_Presence
+fire_data <- group_category(data = fire_data, feature = "Sprinkler_System_Presence", threshold = 0.15, update = TRUE)
+fire_data$Sprinkler_System_Presence <- as.factor(fire_data$Sprinkler_System_Presence)
+table(fire_data$Sprinkler_System_Presence)
+
+#Status_of_Fire_On_Arrival
+fire_data <- group_category(data = fire_data, feature = "Status_of_Fire_On_Arrival", threshold = 0.15, update = TRUE)
+fire_data$Status_of_Fire_On_Arrival <- as.factor(fire_data$Status_of_Fire_On_Arrival)
+table(fire_data$Status_of_Fire_On_Arrival)
+
+#Year
+table(fire_data$year)
+#Cannot collapse any further
+
+#Month
+#Can be removed, this attribute has been reduced already into the Season attribute
+fire_data$month <- NULL
+
+#Day
+fire_data$day <- as.factor(ifelse(fire_data$day %in% c(1:10), "1-10", ifelse(fire_data$day %in% c(11:20), "11-20", "21-31")))
+table(fire_data$day)
+
+#day_of_week
+fire_data$day_of_week <- as.factor(ifelse(fire_data$day_of_week %in% c(2:5), "Monday-Thursday", "Friday-Sunday"))
+table(fire_data$day_of_week)
+
+#hour
+#Can be removed, this attribute has been reduced already into the time_of_day attribute
+fire_data$hour <- NULL
+
+str(fire_data)
+```
+
+```{r}
+#One-hot encoding
+
+#To conclude the data exploration, I will now binarize the data. Binarizing the data will make it useable for machine learning algorithms that don't accept categorical variables, and will also ensure that the models will not misinterpret the ordering of the levels.
+
+dt <- fire_data[-c(25:26)]
+
+dmy <- dummyVars(" ~ .", data = dt)
+
+transf <- data.frame(predict(dmy, newdata = dt))
+
+fire_data_bin <- cbind(transf, fire_data[c(25:26)])
+
+head(fire_data_bin)
+```
+
+```{r}
+#Check correlations now that attributes have been collapsed and binarized
+
+#Remove year and TFS_Alarm_Time fields, which are for data partitoning and time slicing.
+
+corr_data <- fire_data_bin[,-c(98:104, 117:118)]
+
+cor(corr_data)
+
+#Many attributes are now strongly correlated, and must be removed to prevent machine learning models from overfitting. Most of the highly correlated attributes are those coded "Missing," which have been discussed above.
+
+#Search for all pairwise correlations above 0.75, and return vector of columns to remove to reduce pairwise correlations.
+
+high_corr <- findCorrelation(cor(corr_data), cutoff = 0.75)
+
+#Bind uncorrelated features together with time attributes and class variable
+
+fire_data_transformed <- cbind(corr_data[,-high_corr], fire_data_bin[,c(98:104, 117:118)])
+```
+
+```{r}
+#Write pre-binarized and binarized datasets
+
+write.csv(fire_data_transformed, "C:/Users/jaypa/Documents/Word Files/Big Data Certificate/CKME 136/Data/pre_binary.csv", row.names = FALSE)
+
+write.csv(fire_data_transformed, "C:/Users/jaypa/Documents/Word Files/Big Data Certificate/CKME 136/Data/binarized.csv", row.names = FALSE)
+```

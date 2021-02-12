@@ -1,0 +1,503 @@
+---
+title: "Initial Results and Code"
+author: "Terry Gitersos"
+date: "15/03/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(FSelector)
+library(data.table)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(DMwR)
+library(rpart.plot)
+library(Metrics)
+library(randomForest)
+library(pROC)
+library(caretEnsemble)
+library(adabag)
+library(fastAdaboost)
+```
+
+```{r}
+#Load data
+
+fire_data <- read.csv(url("https://raw.githubusercontent.com/terrygitersos/CKME136/31d5ad66ac49faaef214b311ae9aae47e358e672/Data/binarized.csv"), header = TRUE, sep = ",")
+```
+
+```{r}
+#Convert class variable to factor and TFS_Alarm_Date to POSIXct
+
+fire_data$human_risk <- as.factor(fire_data$human_risk)
+
+fire_data$TFS_Alarm_Time <- as.POSIXct(fire_data$TFS_Alarm_Time, format = "%Y-%m-%d%H:%M:%S")
+```
+
+```{r}
+#Split data into training and test sets on the basis of time. The training set will be compromised of all records from 2011-2015, the test set will be comprised of all records from 2016 onwards.
+
+#Training
+training <- fire_data[fire_data$year.2016 == 0 & fire_data$year.2017 == 0 & fire_data$year.2018 == 0,]
+
+#Test
+test <- fire_data[fire_data$year.2016 == 1 | fire_data$year.2017 == 1 | fire_data$year.2018 == 1,]
+
+nrow(training) / nrow(fire_data)
+
+#Training set: 71.7% of total
+#Test set:     28.3% of total
+```
+
+```{r}
+#Remove extraneous or non-predictive attributes from training set:
+
+training$firefighting_time <- NULL
+
+#Year attribute - not needed after partitioning data as we have retained TFS_Alarm_Time attribute
+training[c(196:203)] <- NULL
+```
+
+Feature Selection
+
+Using three methods, one from each of the three classes of feature selection: wrapper, filter, embedded
+
+```{r}
+#Feature Selection, Wrapper: Information Gain
+
+#Run the IG algorithm, minus TFS_Alarm_Time attribute
+
+set.seed(123)
+ig_results <- information.gain(human_risk~., training[-277])
+
+#Transform row names into a column
+ig_results <- setDT(ig_results, keep.rownames = TRUE)[]
+
+#Display results
+ig_results[order(-ig_results$attr_importance),]
+
+#Many of the highest ranking attributes are Missing or Not Applicable, and therefore can't be used in a predictive model. The 10 highest ranking attributes excluding Missing or NA are:
+
+#1. Area_of_Origin.Functional.Area
+#2. Property_Use.Residential
+#3. Building_Status.01...Normal..no.change.
+#4. Sprinkler_System_Presence.3...No.sprinkler.system
+#5. Initial_CAD_Event_Type.Vehicle.Fire.Event
+#6. Area_of_Origin.Vehicle.Areas
+#7. Level_Of_Origin.Upper.Floors
+#8. Material_First_Ignited.Other.Objects
+#9. Initial_CAD_Event_Type.Fire.Event
+#10. Property_Use.Vehicles
+```
+
+```{r}
+#Feature Selection, Filter: Recursive Feature Elimination
+
+#Define the control using a random forest selection function
+
+control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
+
+#run the RFE algorithm
+set.seed(234)
+rfe_results <- rfe(training[1:276], training$human_risk, sizes = c(1:20), rfeControl = control)
+
+rfe_results
+
+predictors(rfe_results)
+
+#The 10 highest attributes are as follows:
+
+#1. Extent_Of_Fire.1...Confined.to.object.of.origin
+#2. Area_of_Origin.Functional.Area
+#3. Smoke_Spread.2...Confined.to.part.of.room.area.of.origin
+#4. Material_First_Ignited.Undetermined
+#5. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.2...Some.persons..at.risk..self.evacuated.as.a.result.of.hearing.alarm
+#6. Fire_Alarm_System_Impact_on_Evacuation.2...Some.persons..at.risk..evacuated.as.a.result.of.hearing.fire.alarm.system
+#7. Extent_Of_Fire.7...Spread.to.other.floors..confined.to.building
+#8. Material_First_Ignited.Soft.Goods.Wearing.Apparel
+#9. Status_of_Fire_On_Arrival.5...Flames.showing.from.large.area..more.than.one.storey..large.area.outdoors.
+#10. Initial_CAD_Event_Type.Medical.Event
+
+```
+
+```{r}
+#Feature Selection, Embedded: LASSO
+
+#Matrix of predictors
+x = model.matrix(human_risk~.,training[-277])
+
+#Vector y values
+y = training$human_risk
+
+set.seed(345)
+lasso_model <- cv.glmnet(x, y, alpha=1, family = "binomial")
+
+best_lambda_lasso <- lasso_model$lambda.1se
+
+#retrieve coefficients
+lasso_coef <- lasso_model$glmnet.fit$beta[,lasso_model$glmnet.fit$lambda == best_lambda_lasso]
+
+#build table
+coef_l = data.table(lasso = lasso_coef)
+
+#add feature names
+coef_l[, feature := names(lasso_coef)] 
+
+#label table
+to_plot_r = melt(coef_l, id.vars='feature', variable.name = 'model', value.name = 'coefficient')
+
+#display results
+options(scipen=999)
+to_plot_r[order(-abs(to_plot_r$coefficient)),]
+
+#plot coefficients
+ggplot(data=to_plot_r,
+       aes(x=feature, y=coefficient, fill=model)) +
+       coord_flip() +         
+       geom_bar(stat='identity', fill='brown4', color='blue') +
+       facet_wrap(~ model) + guides(fill=FALSE) 
+
+#The 10 strongest attributes are as follows:
+
+#1. Initial_CAD_Event_Type.Medical.Event
+#2. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.4...Alarm.operated.but.failed.to.alert.occupant.s...at.risk.
+#3. Extent_Of_Fire.7...Spread.to.other.floors..confined.to.building
+#4. Area_of_Origin.Functional.Area
+#5. Extent_Of_Fire.4...Spread.beyond.room.of.origin..same.floor
+#6. Extent_Of_Fire.3...Spread.to.entire.room.of.origin
+#7. Property_Use.Residential
+#8. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.2...Some.persons..at.risk..self.evacuated.as.a.result.of.hearing.alarm
+#9. Extent_Of_Fire.1...Confined.to.object.of.origin
+#10. Fire_Alarm_System_Impact_on_Evacuation.4...Fire.Alarm.system.operated.but.failed.to.alert.occupant.s.
+
+```
+
+```{r}
+#I will select features through a points system. Only the top 10 attributes from the three methods will be assigned points. The top ranking feature receives 10 points, the second top ranking feature receives 9 points, etc. until the 10th top ranking feature receives 1 point. Features not ranked in the top 10 receive 0 points. The top scoring 9 attributes were selected. The results of this tally:
+
+#Selected attributes
+#1. Area_of_Origin.Functional.Area (26 points)
+#2. Property_Use.Residential (13)
+#3. Extent_Of_Fire.1...Confined.to.object.of.origin (12)
+#4. Extent_Of_Fire.7...Spread.to.other.floors..confined.to.building (12)
+#5. Initial_CAD_Event_Type.Medical.Event (11)
+#6. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.2...Some.persons..at.risk..self.evacuated.as.a.result.of.hearing.alarm (9)
+#7. Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.4...Alarm.operated.but.failed.to.alert.occupant.s...at.risk. (9)
+#8. Building_Status.01...Normal..no.change. (8)
+#9. Smoke_Spread.2...Confined.to.part.of.room.area.of.origin (8)
+
+#Unselected attributes
+#10. Sprinkler_System_Presence.3...No.sprinkler.system (7)
+#11. Material_First_Ignited.Undetermined (7)
+#12. Initial_CAD_Event_Type.Vehicle.Fire.Event (6)
+#13. Extent_Of_Fire.4...Spread.beyond.room.of.origin..same.floor (6)
+#14. Area_of_Origin.Vehicle.Areas (5)
+#15. Fire_Alarm_System_Impact_on_Evacuation.2...Some.persons..at.risk..evacuated.as.a.result.of.hearing.fire.alarm.system (5)
+#16. Extent_Of_Fire.3...Spread.to.entire.room.of.origin (5)
+#17. Level_Of_Origin.Upper.Floors (4)
+#18. Material_First_Ignited.Other.Objects (3)
+#19. Material_First_Ignited.Soft.Goods.Wearing.Apparel (3)
+#20. Initial_CAD_Event_Type.Fire.Event (2)
+#21. Status_of_Fire_On_Arrival.5...Flames.showing.from.large.area..more.than.one.storey..large.area.outdoors. (2)
+#22. Property_Use.Vehicles (1)
+#23. Fire_Alarm_System_Impact_on_Evacuation.4...Fire.Alarm.system.operated.but.failed.to.alert.occupant.s. (1)
+
+#Create data frame with only selected attributes, the class variable, and the TFS_Alarm_Time attribute which will be required for time slicing.
+
+train_features <- training[, c("Area_of_Origin.Functional.Area", "Property_Use.Residential", "Extent_Of_Fire.1...Confined.to.object.of.origin", "Extent_Of_Fire.7...Spread.to.other.floors..confined.to.building", "Initial_CAD_Event_Type.Medical.Event", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.2...Some.persons..at.risk..self.evacuated.as.a.result.of.hearing.alarm", "Smoke_Alarm_Impact_on_Persons_Evacuating_Impact_on_Evacuation.4...Alarm.operated.but.failed.to.alert.occupant.s...at.risk.", "Building_Status.01...Normal..no.change.", "Smoke_Spread.2...Confined.to.part.of.room.area.of.origin", "TFS_Alarm_Time", "human_risk")]
+```
+
+Resampling
+
+```{r}
+#Check distribution and proportion of the class variable
+
+table(train_features$human_risk)
+
+prop.table(table(train_features$human_risk))
+```
+
+```{r}
+#Oversample the minority class and undersample the majority class using SMOTE
+
+train_features$TFS_Alarm_Time <- as.numeric(train_features$TFS_Alarm_Time)
+
+train_resampled <- SMOTE(human_risk ~ ., train_features, perc.over = 600, perc.under = 175)
+
+#Check distribution and proportion of the class variable in the resampled data:
+
+table(train_resampled$human_risk)
+
+prop.table(table(train_resampled$human_risk))
+
+#Convert datetime attributes back to POSIXct format
+train_features$TFS_Alarm_Time <- as.POSIXct.numeric(train_features$TFS_Alarm_Time, origin = "1970-01-01")
+train_resampled$TFS_Alarm_Time <- as.POSIXct.numeric(train_resampled$TFS_Alarm_Time, origin = "1970-01-01")
+
+#Sort by TFS_Alarm_Time, ascending order
+train_resampled <- train_resampled[order(train_resampled$TFS_Alarm_Time),]
+```
+
+```{r}
+#Remove TFS_Alarm_Time from training set
+
+train_algo <- train_resampled[-10]
+
+#Transform class variable to allow seamless execution of caret package
+
+levels(train_algo$human_risk) <- c("Zero", "One")
+```
+
+```{r}
+#Create function to collect full range of evaluation metrics
+
+my_summary <- function(data, lev = NULL, model = NULL){
+  a1 <- defaultSummary(data, lev, model)
+  b1 <- twoClassSummary(data, lev, model)
+  c1 <- prSummary(data, lev, model)
+  out <- c(a1, b1, c1)
+  out}
+
+#Configure controls for sliding window algorithms. It will be 10-fold timewise cross-validation. The initial fold will have 3808 records in the training set, and 952 records in the validation set - a ratio of 80/20. Each subsequent fold starts 875 records after the start point of the previous one.
+
+SlidingWindowControl <- trainControl(method = "timeslice", 
+                              initialWindow = 3808, 
+                              horizon = 952, 
+                              skip = 874, 
+                              fixedWindow = TRUE,
+                              classProbs = TRUE,
+                              verboseIter = TRUE,
+                              savePredictions = TRUE,
+                              allowParallel = TRUE,
+                              summaryFunction = my_summary)
+```
+
+Models
+
+Informed both by Lessman's paper on benchmarking (2015) and the academic literature on fire risk prevention, I have selected three algorithms. Though Lessman recommends using one individual classifier, one homogeneous ensemble, and one heterogeneous ensemble, I have chosen one individual classifier and two homogeneous ensembles. I was unable to use a heterogeneous ensemble, because the caretEnsemble package which creates and merges heterogeneous models is not compatible with timewise cross-validation (only with k-fold cross-validation).
+
+
+```{r}
+#Baseline model: Decision Tree
+
+set.seed(12346)
+
+Sliding_Tree <- train(human_risk~., 
+                    data = train_algo, 
+                    trControl = SlidingWindowControl,
+                    method = "rpart")
+```
+
+```{r}
+#Individual Classifier - Logistic Regression
+
+#Logistic Regression is the highest rated individual classifier in Lessman's study, and was also commonly employed in the fire risk prevention literature.
+
+set.seed(234567)
+  
+Sliding_LR <- train(human_risk~., 
+                    data = train_algo, 
+                    trControl = SlidingWindowControl, 
+                    method = "glm",
+                    family = "binomial",
+                    tuneLength = 5)
+```
+
+```{r}
+#Homogeneous Ensemble Model - Random Forest
+
+#Random Forest is one of the highest rated homogeneous classifier in Lessman's study, and was also commonly used in the fire risk prevention literature.
+
+set.seed(345678)
+  
+Sliding_RF <- train(human_risk~., 
+                    data = train_algo, 
+                    trControl = SlidingWindowControl,
+                    method = "rf", 
+                    tuneLength = 5)
+```
+
+```{r}
+#Homogeneous Ensemble Mode: AdaBoost
+
+#AdaBoost is a boosted decision tree, which is the brand of classifier ranked highest in Lessman's study. It was also commonly used in the fire risk prevention literature.
+
+#Sliding Window Model
+  
+set.seed(4456)
+
+Sliding_AdaBoost <- train(human_risk~., 
+                    data = train_algo, 
+                    trControl = SlidingWindowControl,
+                    method = "adaboost", 
+                    tuneLength = 5)
+```
+
+Model Comparison
+
+```{r}
+#Conduct Friedman Tests on Folds
+
+Accuracy_Values <- c(Sliding_Tree$resample$Accuracy, Sliding_LR$resample$Accuracy, Sliding_RF$resample$Accuracy, Sliding_AdaBoost$resample$Accuracy)
+
+Kappa_Values <- c(Sliding_Tree$resample$Kappa, Sliding_LR$resample$Kappa, Sliding_RF$resample$Kappa, Sliding_AdaBoost$resample$Kappa)
+
+F_Values <- c(Sliding_Tree$resample$F, Sliding_LR$resample$F, Sliding_RF$resample$F, Sliding_AdaBoost$resample$F)
+
+Algorithm <- rep(c("Decision Tree", "Logistic Regression", "Random Forest", "AdaBoost"), each=10, rep = 4)
+Fold <- as.factor(rep(c(1:10), 4))
+
+Accuracy.Test <- data.frame(Accuracy_Values, Algorithm, Fold)
+Kappa.Test <- data.frame(Kappa_Values, Algorithm, Fold)
+F.Test <- data.frame(F_Values, Algorithm, Fold)
+
+friedman.test(Accuracy_Values, Fold, Algorithm, data = Accuracy.Test)
+
+#P-value is > 0.05: cannot reject the null hypothesis that all algorithms have the same accuracy.
+
+friedman.test(Kappa_Values, Fold, Algorithm, data = Kappa.Test)
+
+#P-value is > 0.05: cannot reject the null hypothesis that all algorithms have the same kappa.
+
+friedman.test(F_Values, Fold, Algorithm, data = F.Test)
+
+#P-value is > 0.05: cannot reject the null hypothesis that all algorithms have the same F-scores.
+
+#Perform Friedman Tests with baseline model removed
+
+friedman.test(Accuracy_Values[11:40], Fold[11:40], Algorithm[11:40], data = Accuracy.Test[Accuracy.Test$Algorithm != "Decision Tree",])
+
+#P-value is > 0.05: cannot reject the null hypothesis that all 3 models have the same accuracy.
+
+friedman.test(Kappa_Values[11:40], Fold[11:40], Algorithm[11:40], data = Kappa.Test[Kappa.Test$Algorithm != "Decision Tree",])
+
+#P-value is > 0.05: cannot reject the null hypothesis that all 3 models have the same kappa.
+
+friedman.test(F_Values[11:40], Fold[11:40], Algorithm[11:40], data = F.Test[F.Test$Algorithm != "Decision Tree",])
+
+#P-value is > 0.05: cannot reject the null hypothesis that all 3 models have the same F-score.
+```
+
+Evaluation
+
+```{r}
+
+#Accuracy
+
+c("Tree" = summary(Sliding_Tree$resample$Accuracy), "LR" = summary(Sliding_LR$resample$Accuracy), "RF" = summary(Sliding_RF$resample$Accuracy), "Adaboost" = summary(Sliding_AdaBoost$resample$Accuracy))
+
+boxplot(Sliding_Tree$resample$Accuracy, Sliding_LR$resample$Accuracy, Sliding_RF$resample$Accuracy, Sliding_AdaBoost$resample$Accuracy, names = c("Tree", "LR", "RF", "AdaBoost"))
+
+#The four models are quite similar in terms of accuracy.
+
+#Kappa
+
+c("Tree" = summary(Sliding_Tree$resample$Kappa), "LR" = summary(Sliding_LR$resample$Kappa), "RF" = summary(Sliding_RF$resample$Kappa), "Adaboost" = summary(Sliding_AdaBoost$resample$Kappa))
+
+boxplot(Sliding_Tree$resample$Kappa, Sliding_LR$resample$Kappa, Sliding_RF$resample$Kappa, Sliding_AdaBoost$resample$Kappa, names = c("Tree", "LR", "RF", "AdaBoost"))
+
+#The four models are again quite similar in terms of kappa. The RF and AdaBoost models achieved greater maximum kappa values than the Decision Tree. I note also that one of the folds in the Decision Tree are an outlier. 
+
+#F Score
+
+c("Tree" = summary(Sliding_Tree$resample$F), "LR" = summary(Sliding_LR$resample$F), "RF" = summary(Sliding_RF$resample$F), "Adaboost" = summary(Sliding_AdaBoost$resample$F))
+
+boxplot(Sliding_Tree$resample$F, Sliding_LR$resample$F, Sliding_RF$resample$F, Sliding_AdaBoost$resample$F, names = c("Tree", "LR", "RF", "AdaBoost"))
+
+#Again, the four models are all fairly similar. The LR and AdaBoost models are not as consistent as the baseline and RF models. 
+
+#Based on the training data, there is little separating the four models.
+```
+
+Testing the Models
+
+```{r}
+levels(test$human_risk) <- c("Zero", "One")
+
+#Decision Tree
+set.seed(14219)
+Tree_Test <- predict(Sliding_Tree, test)
+
+Tree_Matrix <- confusionMatrix(Tree_Test, as.factor(test$human_risk))
+
+Tree_Accuracy <- Tree_Matrix[["overall"]][["Accuracy"]]
+Tree_Kappa <- Tree_Matrix[["overall"]][["Kappa"]]
+Tree_FScore <- Tree_Matrix[["byClass"]][["F1"]]
+
+#Logistic Regression
+set.seed(14218)
+LR_Test <- predict(Sliding_LR, test)
+
+LR_Matrix <- confusionMatrix(LR_Test, as.factor(test$human_risk))
+
+LR_Accuracy <- LR_Matrix[["overall"]][["Accuracy"]]
+LR_Kappa <- LR_Matrix[["overall"]][["Kappa"]]
+LR_FScore <- LR_Matrix[["byClass"]][["F1"]]
+
+#Random Forest
+set.seed(14217)
+RF_Test <- predict(Sliding_RF, test)
+
+RF_Matrix <- confusionMatrix(RF_Test, as.factor(test$human_risk))
+
+RF_Accuracy <- RF_Matrix[["overall"]][["Accuracy"]]
+RF_Kappa <- RF_Matrix[["overall"]][["Kappa"]]
+RF_FScore <- RF_Matrix[["byClass"]][["F1"]]
+
+#AdaBoost
+set.seed(14216)
+Ada_Test <- predict(Sliding_AdaBoost, test)
+
+Ada_Matrix <- confusionMatrix(Ada_Test, as.factor(test$human_risk))
+
+Ada_Accuracy <- Ada_Matrix[["overall"]][["Accuracy"]]
+Ada_Kappa <- Ada_Matrix[["overall"]][["Kappa"]]
+Ada_FScore <- Ada_Matrix[["byClass"]][["F1"]]
+```
+
+Evaluation
+
+```{r}
+#Accuracy
+
+algo_desc <- c("Tree - Train", "Tree - Test", "LR - Train", "LR - Test", "RF - Train", "RF - Test", "Ada - Train", "Ada - Test")
+
+algo_accuracy <- c(median(Sliding_Tree$resample$Accuracy), Tree_Accuracy, median(Sliding_LR$resample$Accuracy), LR_Accuracy, median(Sliding_RF$resample$Accuracy), RF_Accuracy, median(Sliding_AdaBoost$resample$Accuracy), Ada_Accuracy)
+
+accuracy_eval <- data.frame(algo_desc, algo_accuracy)
+
+barplot(accuracy_eval$algo_accuracy, names.arg = accuracy_eval$algo_desc)
+
+#The Decision Tree, LR and RF models achieved greater accuracy on the test set then their median training accuracy. In the case of LR and RF the test set accuracy was approximately 10% better than the median training accuracy.
+
+#Kappa
+
+algo_kappa <- c(median(Sliding_Tree$resample$Kappa), Tree_Kappa, median(Sliding_LR$resample$Kappa), LR_Kappa, median(Sliding_RF$resample$Kappa), RF_Kappa, median(Sliding_AdaBoost$resample$Kappa), Ada_Kappa)
+
+kappa_eval <- data.frame(algo_desc, algo_kappa)
+
+barplot(kappa_eval$algo_kappa, names.arg = accuracy_eval$algo_desc)
+
+#All four models were characterized by a test kappa value that was significantly lower than the median training kappa value. This is most dramatically illustrated by the AdaBoost model: its median training kappa value was highest of the four model, but its test kappa value is the lowest of the four. The test kappa scores of the four models are comparable, but LR and RF have the highest values.  
+
+#Harmonic Mean
+
+algo_F <- c(median(Sliding_Tree$resample$F), Tree_FScore, median(Sliding_LR$resample$F), LR_FScore, median(Sliding_RF$resample$F), RF_FScore, median(Sliding_AdaBoost$resample$F), Ada_FScore)
+
+F_eval <- data.frame(algo_desc, algo_F)
+
+barplot(F_eval$algo_F, names.arg = F_eval$algo_desc)
+
+#All models achieved a greater F-value in testing than their median training f-value. LR and RF again achieved the strongest test results - both have a test F-value of approximately 88.5%.
+```
+
+Preliminary Results
+
+```{r}
+#Of the four models, it is clear that AdaBoost is weakest. While the baseline Decision Tree model performed very well both in training and testing, both LR and RF were marginally superior. There is not much separating the LR and RF models, but LR scored incrementally better to RF in each metric: 80.6% vs. 80.3% in accuracy, 0.236 vs. 0.223 in kappa, and 0.887 vs. 0.885 in harmonic mean.
+```
